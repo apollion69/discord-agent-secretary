@@ -18,6 +18,12 @@ logger = logging.getLogger(__name__)
 REFUSE_PERMS: Final[frozenset[str]] = frozenset({
     "administrator",
     "manage_guild",
+    "manage_roles",
+    "manage_channels",
+    "manage_webhooks",
+    "ban_members",
+    "kick_members",
+    "mention_everyone",
 })
 
 

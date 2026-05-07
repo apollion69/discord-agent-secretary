@@ -47,6 +47,9 @@ class _FakeProc:
             await _a.sleep(10)
         return self._stdout, self._stderr
 
+    async def wait(self) -> int:
+        return self.returncode
+
     def kill(self) -> None:
         self.killed = True
 

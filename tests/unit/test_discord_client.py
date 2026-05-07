@@ -24,6 +24,12 @@ def _make_member(
     *,
     administrator: bool = False,
     manage_guild: bool = False,
+    manage_roles: bool = False,
+    manage_channels: bool = False,
+    manage_webhooks: bool = False,
+    ban_members: bool = False,
+    kick_members: bool = False,
+    mention_everyone: bool = False,
     view_channel: bool = True,
     send_messages: bool = True,
 ) -> MagicMock:
@@ -31,6 +37,12 @@ def _make_member(
     perms = MagicMock(spec=discord.Permissions)
     perms.administrator = administrator
     perms.manage_guild = manage_guild
+    perms.manage_roles = manage_roles
+    perms.manage_channels = manage_channels
+    perms.manage_webhooks = manage_webhooks
+    perms.ban_members = ban_members
+    perms.kick_members = kick_members
+    perms.mention_everyone = mention_everyone
     perms.view_channel = view_channel
     perms.send_messages = send_messages
     member = MagicMock(spec=discord.Member)
@@ -88,7 +100,28 @@ class TestAssertSafePermissions:
         assert "manage_guild" in msg
 
     def test_refuse_set_is_canonical(self) -> None:
-        assert REFUSE_PERMS == frozenset({"administrator", "manage_guild"})
+        assert REFUSE_PERMS == frozenset({
+            "administrator",
+            "manage_guild",
+            "manage_roles",
+            "manage_channels",
+            "manage_webhooks",
+            "ban_members",
+            "kick_members",
+            "mention_everyone",
+        })
+
+    @pytest.mark.parametrize(
+        "perm",
+        ["manage_roles", "manage_channels", "manage_webhooks",
+         "ban_members", "kick_members", "mention_everyone"],
+    )
+    def test_blocks_each_dangerous_perm(self, perm: str) -> None:
+        guild = _make_guild()
+        member = _make_member(**{perm: True})
+        with pytest.raises(UnsafePermissionsError) as exc:
+            assert_safe_permissions(guild, member)
+        assert perm in str(exc.value).lower()
 
 
 class TestBuildClient:

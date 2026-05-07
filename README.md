@@ -76,14 +76,14 @@ uv pip install discord-agent-secretary
 
 ```bash
 cp .env.example .env
-# edit .env — at minimum set DISCORD_TOKEN and BACKEND
+# edit .env — at minimum set DISCORD_BOT_TOKEN and BACKEND
 ```
 
 Key variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `DISCORD_TOKEN` | *(required)* | Bot token from Discord Developer Portal |
+| `DISCORD_BOT_TOKEN` | *(required)* | Bot token from Discord Developer Portal |
 | `BACKEND` | `multica` | `multica` \| `github` \| `linear` \| `jira` |
 | `DISCORD_GUILD_ID` | `""` | Guild-scoped commands (instant sync); empty = global (1h delay) |
 

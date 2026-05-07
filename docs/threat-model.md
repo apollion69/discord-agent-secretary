@@ -50,7 +50,9 @@ arbitrary messages — only slash command payloads directed at it explicitly.
 
 ### Timeout on every external call
 `MulticaBackend._invoke()` enforces `timeout=settings.multica_cli_timeout`
-(default 30 s) on every CLI call. Hung subprocesses are `.kill()`ed.
+(default 8 s, configurable 0.5–60 s) on every CLI call. Hung subprocesses
+are `.kill()`ed and reaped via `await proc.wait()` so they cannot linger
+as zombies.
 
 ---
 

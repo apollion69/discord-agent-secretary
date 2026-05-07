@@ -110,6 +110,12 @@ class MulticaBackend(IssueBackendBase):
             )
         except TimeoutError as err:
             proc.kill()
+            # Reap the child so it doesn't linger as a zombie. Bound the
+            # wait so a process ignoring SIGKILL can't hang us forever.
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except TimeoutError:
+                pass
             raise MulticaCliTimeoutError(
                 f"multica CLI timed out after {self._timeout}s"
             ) from err
