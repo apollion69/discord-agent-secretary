@@ -1,0 +1,107 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "discord-agent-secretary"
+version = "0.1.0"
+description = "Discord bot that turns slash commands and channel chatter into issues across Multica, GitHub, Linear, Jira via a pluggable backend protocol."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "apollion69" }]
+keywords = ["discord", "discord-bot", "issue-tracker", "multica", "github-issues", "linear", "jira", "slash-commands", "automation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Chat",
+    "Topic :: Software Development :: Bug Tracking",
+    "Typing :: Typed",
+]
+dependencies = [
+    "discord.py>=2.3",
+    "pydantic>=2.5",
+    "pydantic-settings>=2.1",
+    "structlog>=24.1",
+    "httpx>=0.27",
+    "PyYAML>=6",
+]
+
+[project.optional-dependencies]
+# Backend extras — install only what you use.
+multica = []                      # uses the `multica` CLI binary; no Python deps
+github  = ["httpx>=0.27"]         # already in core, declared for parity
+linear  = ["httpx>=0.27"]
+jira    = ["httpx>=0.27"]
+llm     = ["anthropic>=0.34"]     # optional LLM fallback for low-confidence parses
+
+dev = [
+    "pytest>=7.4",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4",
+    "pytest-mock>=3",
+    "dpytest>=0.7",
+    "freezegun>=1.4",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/apollion69/discord-agent-secretary"
+Issues   = "https://github.com/apollion69/discord-agent-secretary/issues"
+
+[project.scripts]
+discord-agent-secretary = "discord_agent_secretary.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+minversion = "7.4"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+]
+markers = [
+    "unit: fast isolated tests, no external I/O",
+    "integration: subprocess/network mocked; multi-component",
+    "e2e: full flow against live services",
+]
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "ASYNC"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true

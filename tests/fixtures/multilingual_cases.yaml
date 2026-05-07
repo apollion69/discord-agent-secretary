@@ -1,0 +1,117 @@
+# Parser golden cases (RU + EN). Loaded by tests/conftest.py::multilingual_cases.
+# Dates assume FROZEN_TODAY = 2026-04-21.
+cases:
+  - id: en_simple
+    lang: en
+    input: "/task Create docs"
+    expected:
+      title: "Create docs"
+      priority: null
+      deadline: null
+      assignee: null
+
+  - id: en_priority_p1
+    lang: en
+    input: "/task [P1] Bug fix"
+    expected:
+      title: "Bug fix"
+      priority: high
+
+  - id: en_priority_p3
+    lang: en
+    input: "/task [P3] Low task"
+    expected:
+      title: "Low task"
+      priority: low
+
+  - id: en_priority_p2
+    lang: en
+    input: "/task [P2] Medium"
+    expected:
+      title: "Medium"
+      priority: medium
+
+  - id: ru_priority_urgent
+    lang: ru
+    input: "/task Bug [срочно]"
+    expected:
+      title: "Bug"
+      priority: high
+
+  - id: ru_priority_normal
+    lang: ru
+    input: "/task Refactor [обычно]"
+    expected:
+      title: "Refactor"
+      priority: medium
+
+  - id: date_iso
+    lang: en
+    input: "/task Do by 2026-04-25"
+    expected:
+      title: "Do"
+      deadline: "2026-04-25"
+
+  - id: date_ru_dotted
+    lang: ru
+    input: "/task Do by 25.04.2026"
+    expected:
+      title: "Do"
+      deadline: "2026-04-25"
+
+  - id: date_rel_en
+    lang: en
+    input: "/task Do in 3 days"
+    expected:
+      title: "Do"
+      deadline: "2026-04-24"
+
+  - id: date_rel_ru
+    lang: ru
+    input: "/task Do за 2 дня"
+    expected:
+      title: "Do"
+      deadline: "2026-04-23"
+
+  - id: assignee_mention
+    lang: en
+    input: "/task Assign to @alice"
+    expected:
+      title: "Assign to"
+      assignee: "alice"
+
+  - id: assignee_numeric_id
+    lang: en
+    input: "/task Assign <@123456789>"
+    expected:
+      title: "Assign"
+      assignee_id: 123456789
+
+  - id: all_fields
+    lang: en
+    input: "/task [P1] Fix 2026-04-25 @bob"
+    expected:
+      title: "Fix"
+      priority: high
+      deadline: "2026-04-25"
+      assignee: "bob"
+
+  - id: pure_russian
+    lang: ru
+    input: "/task Привет мир"
+    expected:
+      title: "Привет мир"
+
+  - id: ru_priority_and_date
+    lang: ru
+    input: "/task [P1] Кириллица до 25.04"
+    expected:
+      title: "Кириллица до"
+      priority: high
+      deadline: "2026-04-25"
+
+  - id: unicode_japanese
+    lang: other
+    input: "/task 日本語です"
+    expected:
+      title: "日本語です"
