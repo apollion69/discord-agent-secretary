@@ -32,8 +32,13 @@ observation) is out of scope and will receive its own threat model in v0.2.
 
 ### Permission fail-safe (CRITICAL)
 `assert_safe_permissions()` in `discord_client.py` aborts the bot on `on_ready`
-if ADMINISTRATOR or MANAGE_GUILD permissions are detected. The bot cannot be
-tricked into running with elevated permissions — it refuses to start.
+if any of these permissions are detected: ADMINISTRATOR, MANAGE_GUILD,
+MANAGE_ROLES, MANAGE_CHANNELS, MANAGE_WEBHOOKS, BAN_MEMBERS, KICK_MEMBERS,
+MENTION_EVERYONE. If the bot's guild membership cannot be resolved
+(`get_member` miss + `fetch_member` failure), startup is also aborted —
+better than running with unverified authority. The bot cannot be tricked
+into running with elevated permissions; it refuses to start and `main()`
+returns a non-zero exit so orchestrators see the failure.
 
 ### No shell injection
 All subprocess calls use `asyncio.create_subprocess_exec` with an explicit
@@ -41,8 +46,24 @@ All subprocess calls use `asyncio.create_subprocess_exec` with an explicit
 
 ### No secret leakage to Discord
 `handlers._safe_invoke()` catches all `BackendError` subclasses and sends only
-a generic sanitized message to the Discord channel. Backend stderr (which may
+a generic sanitized message to the Discord channel — and that error reply is
+ephemeral, visible only to the invoking user. Backend stderr (which may
 contain paths, exit codes, or token fragments) is logged server-side only.
+
+### Defense-in-depth: log redactor
+`SecretRedactingFilter` in `logging_setup.py` is wired in `main.py` with the
+full set of secret-shaped settings (`DISCORD_BOT_TOKEN`, `GITHUB_TOKEN`,
+`LINEAR_API_KEY`, `JIRA_API_TOKEN`, `ANTHROPIC_API_KEY`). If any of those
+values appears verbatim in a log message or `extra` field, it's replaced
+with `***REDACTED***` before the formatter runs. This catches accidental
+inclusion through e.g. `logger.exception` rendering of an exception that
+embedded a secret.
+
+### Per-user rate limit
+`handlers.RateLimiter` (token-bucket, 5-burst / 1 token per 2 s) is keyed by
+`(guild_id, user_id)`. A spamming member is told ephemerally to slow down
+and never reaches the backend, capping subprocess churn / API quota burn.
+State is in-process; multi-replica deployments need a shared store.
 
 ### No Message Content intent
 The bot requests only `guilds` and `guild_messages` intents. It cannot read
@@ -60,9 +81,9 @@ as zombies.
 
 | Risk | Mitigation status |
 |---|---|
-| Rate limiting / quota abuse via slash command spam | Not implemented; Discord's built-in app rate limits apply |
 | P5 passive observer — reading channel messages | Not implemented; will require explicit opt-in + separate threat model |
 | Multi-guild token reuse | Single-tenant deployment assumed in v0.1 |
+| Distributed (multi-replica) rate limiting | Out of scope; current limiter is in-process only |
 
 ---
 

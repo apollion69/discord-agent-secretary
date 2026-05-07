@@ -147,6 +147,21 @@ class Settings(BaseSettings):
             ) from e
         return v
 
+    @field_validator("tz")
+    @classmethod
+    def _validate_tz(cls, v: str) -> str:
+        """Reject timezone names ZoneInfo can't resolve.
+
+        Catches typos at boot rather than at the first deadline parse.
+        """
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(v)
+        except ZoneInfoNotFoundError as e:
+            raise ValueError(f"tz {v!r} is not a known IANA zone") from e
+        return v
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

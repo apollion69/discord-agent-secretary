@@ -9,6 +9,7 @@ import pytest
 from discord_agent_secretary import logging_setup
 from discord_agent_secretary.logging_setup import (
     JsonFormatter,
+    SecretRedactingFilter,
     configure_logging,
     get_logger,
 )
@@ -99,3 +100,40 @@ class TestGetLogger:
         logger = get_logger("discord_agent_secretary.test")
         assert logger is not None
         assert hasattr(logger, "info")
+
+
+class TestSecretRedactingFilter:
+    def test_redacts_message_arg(self, capsys):
+        secret = "tok_supersecret_value_123"
+        configure_logging(level="INFO", fmt="json", force=True, secrets=[secret])
+        logging.getLogger("t").info("sending request with token=%s", secret)
+        out = capsys.readouterr().out.strip()
+        payload = json.loads(out)
+        assert secret not in payload["msg"]
+        assert "***REDACTED***" in payload["msg"]
+
+    def test_redacts_extra_field(self, capsys):
+        secret = "ghp_redactable_pat_token_abc"
+        configure_logging(level="INFO", fmt="json", force=True, secrets=[secret])
+        logging.getLogger("t").error("api call failed", extra={"detail": secret})
+        out = capsys.readouterr().out.strip()
+        payload = json.loads(out)
+        assert secret not in out
+        assert payload["detail"] == "***REDACTED***"
+
+    def test_short_secrets_skipped(self):
+        # Short values are unsafe to scrub: "x" or "abc" would mask half the
+        # English language. The filter ignores anything below MIN_LEN.
+        f = SecretRedactingFilter(["abc"])
+        record = logging.LogRecord(
+            "t", logging.INFO, "x.py", 1, "abc DEF", None, None
+        )
+        f.filter(record)
+        assert "abc" in record.getMessage()
+
+    def test_empty_secrets_is_passthrough(self, capsys):
+        configure_logging(level="INFO", fmt="json", force=True, secrets=[])
+        logging.getLogger("t").info("just a message")
+        out = capsys.readouterr().out.strip()
+        payload = json.loads(out)
+        assert payload["msg"] == "just a message"

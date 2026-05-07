@@ -23,12 +23,17 @@ from .base import IssueBackendBase, IssueRef
 
 
 class GitHubBackend(IssueBackendBase):
-    """Not implemented — see module docstring for contributor guide."""
+    """Not implemented — see module docstring for contributor guide.
+
+    Construction itself raises so a misconfigured `BACKEND=github` deployment
+    fails at boot, not on the first user-visible `/task`.
+    """
 
     def __init__(self, *, token: str, repo: str, timeout: float = 10.0) -> None:
-        self._token = token
-        self._repo = repo
-        self._timeout = timeout
+        raise NotImplementedError(
+            "GitHubBackend is a stub — see module docstring for the contributor "
+            "guide. Switch BACKEND to a supported value or open a PR."
+        )
 
     async def create_issue(
         self,
@@ -37,17 +42,14 @@ class GitHubBackend(IssueBackendBase):
         description: str | None = None,
         priority: str | None = None,
         assignee: str | None = None,
-    ) -> IssueRef:
-        raise NotImplementedError(
-            "GitHubBackend.create_issue is not implemented yet — "
-            "see module docstring for the contributor guide."
-        )
+    ) -> IssueRef:  # pragma: no cover — unreachable, __init__ raises.
+        raise NotImplementedError
 
-    async def get_issue(self, issue_id: str) -> IssueRef:
-        raise NotImplementedError("GitHubBackend.get_issue not implemented yet.")
+    async def get_issue(self, issue_id: str) -> IssueRef:  # pragma: no cover
+        raise NotImplementedError
 
-    async def assign_issue(self, issue_id: str, to: str) -> IssueRef:
-        raise NotImplementedError("GitHubBackend.assign_issue not implemented yet.")
+    async def assign_issue(self, issue_id: str, to: str) -> IssueRef:  # pragma: no cover
+        raise NotImplementedError
 
-    async def update_status(self, issue_id: str, status: str) -> IssueRef:
-        raise NotImplementedError("GitHubBackend.update_status not implemented yet.")
+    async def update_status(self, issue_id: str, status: str) -> IssueRef:  # pragma: no cover
+        raise NotImplementedError

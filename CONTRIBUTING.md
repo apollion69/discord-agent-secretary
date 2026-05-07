@@ -44,11 +44,13 @@ Use the error hierarchy from `base.py`:
 
 ### Step 2 — Add config fields
 
-In `src/discord_agent_secretary/config.py`, add settings under a comment block:
+In `src/discord_agent_secretary/config.py`, add settings under a comment block.
+Field names are matched to env vars case-insensitively, so no `alias=` is
+needed:
 
 ```python
-# --- YourTracker ---
-your_tracker_api_key: str = Field(default="", alias="YOUR_TRACKER_API_KEY")
+# === YourTracker backend ===
+your_tracker_api_key: str = Field(default="", description="...")
 ```
 
 ### Step 3 — Wire the factory
@@ -96,7 +98,7 @@ CI requires: `pytest` (≥80% coverage), `ruff` (zero errors), `mypy` (strict).
 - [ ] `mypy src` passes
 - [ ] `.env.example` updated
 - [ ] README quickstart section added
-- [ ] Stub backend file updated with `raise NotImplementedError` replaced by real implementation
+- [ ] Stub backend file replaced — `__init__` no longer raises `NotImplementedError`, and every method has a real implementation
 
 ---
 
