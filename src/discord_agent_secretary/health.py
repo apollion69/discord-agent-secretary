@@ -94,8 +94,17 @@ def start_healthcheck(
     server = socketserver.ThreadingTCPServer((bind, port), handler)
     server.daemon_threads = True
     actual_port = server.server_address[1]
+    def _serve() -> None:
+        try:
+            server.serve_forever()
+        except Exception as exc:  # noqa: BLE001
+            logger.critical(
+                "healthcheck server crashed — probes will fail",
+                extra={"detail": str(exc)},
+            )
+
     thread = threading.Thread(
-        target=server.serve_forever,
+        target=_serve,
         name=f"healthcheck-{actual_port}",
         daemon=True,
     )

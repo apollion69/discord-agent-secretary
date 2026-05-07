@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any, Final
 
 from .base import (
@@ -45,6 +46,8 @@ class MulticaCliError(BackendCallError):
 class MulticaParseError(BackendParseError):
     """The CLI output was not the expected JSON shape."""
 
+
+_logger = logging.getLogger(__name__)
 
 _DEFAULT_CLI: Final = "multica"
 _DEFAULT_TIMEOUT: Final = 8.0
@@ -96,7 +99,10 @@ async def _reap(proc: asyncio.subprocess.Process) -> None:
     try:
         await asyncio.wait_for(proc.wait(), timeout=_REAP_TIMEOUT)
     except TimeoutError:
-        pass
+        _logger.warning(
+            "multica subprocess still running after SIGKILL",
+            extra={"pid": proc.pid, "reap_timeout": _REAP_TIMEOUT},
+        )
 
 
 class MulticaBackend(IssueBackendBase):

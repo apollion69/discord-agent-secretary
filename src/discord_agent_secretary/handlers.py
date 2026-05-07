@@ -180,8 +180,11 @@ def register_handlers(
             await interaction.response.send_message(
                 _USER_RATE_LIMITED, ephemeral=True
             )
-        except discord.HTTPException:
-            pass
+        except discord.HTTPException as e:
+            logger.warning(
+                "rate-limit reply failed to send",
+                extra={**_ctx_extra(interaction), "detail": str(e)},
+            )
         return False
 
     @tree.command(
@@ -220,9 +223,10 @@ def register_handlers(
         )
         if ref is None:
             return
+        safe_title = discord.utils.escape_markdown(getattr(ref, "title", None) or title)
         await _safe_followup(
             interaction,
-            f"✅ Создана задача **{getattr(ref, 'title', None) or title}** `{ref.id}`",
+            f"✅ Создана задача **{safe_title}** `{ref.id}`",
         )
 
     @tree.command(
@@ -251,7 +255,7 @@ def register_handlers(
             return
         await _safe_followup(
             interaction,
-            f"✅ Задача `{ref.id}` переведена в **{status.value}**.",
+            f"✅ Задача `{ref.id}` переведена в **{discord.utils.escape_markdown(status.value)}**.",
         )
 
     @tree.command(
@@ -277,5 +281,5 @@ def register_handlers(
             return
         await _safe_followup(
             interaction,
-            f"✅ Задача `{ref.id}` назначена на **{to}**.",
+            f"✅ Задача `{ref.id}` назначена на **{discord.utils.escape_markdown(to)}**.",
         )

@@ -48,7 +48,14 @@ def _collect_secrets(settings: object) -> list[str]:
 
 
 def main() -> int:
-    settings = get_settings()
+    try:
+        settings = get_settings()
+    except Exception as exc:
+        # Pydantic ValidationError or any unexpected config failure — log to
+        # stderr directly because the logging subsystem isn't set up yet.
+        import sys
+        print(f"CRITICAL: configuration failed: {exc}", file=sys.stderr)
+        return 1
     configure_logging(
         level=settings.log_level,
         fmt=settings.log_format,
@@ -137,9 +144,12 @@ def main() -> int:
         for sig in (signal.SIGTERM, signal.SIGINT):
             try:
                 loop.add_signal_handler(sig, _request_close)
-            except (NotImplementedError, RuntimeError):
+            except (NotImplementedError, RuntimeError) as exc:
                 # Windows / non-main-thread — discord.py's own handlers stay.
-                pass
+                logger.warning(
+                    "signal handler not registered — graceful shutdown may not work",
+                    extra={"signal": sig.name, "detail": str(exc)},
+                )
 
         async with client:
             await client.start(settings.discord_bot_token)
@@ -153,7 +163,10 @@ def main() -> int:
         return 0
     finally:
         if health_handle is not None:
-            health_handle.shutdown()
+            try:
+                health_handle.shutdown()
+            except Exception as exc:
+                logger.warning("health server shutdown raised", extra={"detail": str(exc)})
 
     return 1 if state["aborted"] else 0
 
