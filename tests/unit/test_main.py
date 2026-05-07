@@ -45,6 +45,23 @@ class TestCollectSecrets:
         assert 12345 not in result
 
 
+def _make_runner_stub(*, raise_exc: BaseException | None = None):
+    """Build an `asyncio.run` replacement that closes the coroutine argument.
+
+    Without closing it, Python issues a `coroutine was never awaited`
+    warning that pollutes the test output (and looks like a real bug).
+    """
+
+    def _stub(coro, *args, **kwargs):
+        if hasattr(coro, "close"):
+            coro.close()
+        if raise_exc is not None:
+            raise raise_exc
+        return None
+
+    return _stub
+
+
 class TestMainEntrypoint:
     def test_missing_token_returns_one(self, monkeypatch, clean_settings) -> None:
         # No DISCORD_BOT_TOKEN -> early exit with code 1, no Discord call.
@@ -60,7 +77,9 @@ class TestMainEntrypoint:
             patch("discord_agent_secretary.main.asyncio.run") as runner,
         ):
             make_backend.return_value = MagicMock()
-            runner.side_effect = discord.LoginFailure("bad token")
+            runner.side_effect = _make_runner_stub(
+                raise_exc=discord.LoginFailure("bad token")
+            )
             rc = main()
         assert rc == 1
 
@@ -71,7 +90,7 @@ class TestMainEntrypoint:
             patch("discord_agent_secretary.main.asyncio.run") as runner,
         ):
             make_backend.return_value = MagicMock()
-            runner.side_effect = KeyboardInterrupt()
+            runner.side_effect = _make_runner_stub(raise_exc=KeyboardInterrupt())
             rc = main()
         assert rc == 0
 
@@ -82,6 +101,6 @@ class TestMainEntrypoint:
             patch("discord_agent_secretary.main.asyncio.run") as runner,
         ):
             make_backend.return_value = MagicMock()
-            runner.return_value = None  # bot finished without aborting
+            runner.side_effect = _make_runner_stub()
             rc = main()
         assert rc == 0

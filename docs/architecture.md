@@ -50,7 +50,9 @@ on the `IssueBackend` protocol from `backends/base.py`. Concrete backends
 ┌─────────────────────────────────────────┐
 │            handlers.py                  │
 │  register_handlers(tree, backend, gid)  │
+│  RateLimiter — per-(guild, user) bucket │
 │  _safe_invoke() — error sanitization    │
+│  _safe_followup() — HTTP-error guard    │
 └────────────────┬────────────────────────┘
                  │ IssueBackend protocol
        ┌─────────┴──────────┐
@@ -66,6 +68,14 @@ on the `IssueBackend` protocol from `backends/base.py`. Concrete backends
        │
        ▼
   Multica issue tracker
+
+Cross-cutting:
+  logging_setup.py — JSON formatter + SecretRedactingFilter
+                     (masks every settings-derived secret).
+  parsers.py       — regex-first /task parser (RU + EN); used by the
+                     P5 passive observer (planned for v0.2).
+  config.py        — pydantic-settings, env-driven; tz validated via
+                     zoneinfo; CSV-friendly for DISCORD_WATCH_CHANNELS.
 ```
 
 ---
@@ -87,7 +97,21 @@ but are caught via the abstract hierarchy in `handlers.py`.
 
 ## Security invariants
 
-1. `UnsafePermissionsError` aborts boot if ADMINISTRATOR or MANAGE_GUILD detected.
-2. No `shell=True` anywhere — subprocess calls use the list form of argv.
-3. Backend stderr is logged server-side only; users see only sanitized messages.
-4. No Message Content intent — the bot cannot read channel messages in v0.1.
+1. `UnsafePermissionsError` aborts boot if any of ADMINISTRATOR,
+   MANAGE_GUILD, MANAGE_ROLES, MANAGE_CHANNELS, MANAGE_WEBHOOKS,
+   BAN_MEMBERS, KICK_MEMBERS, MENTION_EVERYONE is detected. Bot
+   membership that cannot be resolved (`get_member` miss +
+   `fetch_member` failure) also aborts boot.
+2. `main()` returns a non-zero exit code on any boot refusal, so
+   container orchestrators surface the failure instead of silently
+   restarting.
+3. No `shell=True` anywhere — subprocess calls use the list form of
+   argv. The Multica child process is reaped via `proc.wait()` after
+   `kill()` on timeout.
+4. Backend stderr is logged server-side only and goes through the
+   `SecretRedactingFilter`; user-visible error messages are sanitized
+   *and* ephemeral (single-user-only).
+5. No Message Content intent — the bot cannot read channel messages
+   in v0.1.
+6. `RateLimiter` per (guild, user) caps subprocess churn / API quota
+   burn from a spamming member.

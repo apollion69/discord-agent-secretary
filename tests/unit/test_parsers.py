@@ -87,6 +87,26 @@ class TestDate:
         r = parse_task("/task X 25.04.2026", today=frozen_today)
         assert r.deadline == "2026-04-25"
 
+    def test_ru_short_date_rolls_forward_when_past(self):
+        from datetime import date
+
+        # today is May 1; "25.04" must mean next April, not last April.
+        r = parse_task("/task до 25.04", today=date(2026, 5, 1))
+        assert r.deadline == "2027-04-25"
+
+    def test_ru_short_invalid_date_kept_in_title(self):
+        from datetime import date
+
+        r = parse_task("/task до 31.02", today=date(2026, 4, 21))
+        assert r.deadline is None
+        assert "31.02" in r.title
+
+    def test_tz_aware_today_default(self):
+        # Smoke: passing a valid IANA zone should not raise and should pick
+        # up a date — we don't assert the value because it depends on now().
+        r = parse_task("/task ping in 1 days", tz="Europe/Moscow")
+        assert r.deadline is not None
+
 
 class TestAssignee:
     def test_mention_handle_extracted(self):
