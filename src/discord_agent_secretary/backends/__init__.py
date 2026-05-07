@@ -45,8 +45,8 @@ def make_backend(settings: Settings) -> IssueBackend:
     """Return a concrete `IssueBackend` selected by `settings.backend`.
 
     Raises `ValueError` for unknown backend names. Stub backends raise
-    `NotImplementedError` on first call rather than at construction so a
-    misconfigured deployment surfaces a clear error path-by-path.
+    `NotImplementedError` from their `__init__`, so a misconfigured
+    deployment fails fast at boot rather than at the first slash command.
     """
     name = settings.backend.lower()
 

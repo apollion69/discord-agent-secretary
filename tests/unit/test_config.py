@@ -105,6 +105,16 @@ class TestSettingsValidation:
         with pytest.raises(ValidationError):
             Settings(_env_file=None)
 
+    def test_unknown_tz_rejected(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("TZ", "Mars/Olympus_Mons")
+        with pytest.raises(ValidationError, match="IANA"):
+            Settings(_env_file=None)
+
+    def test_known_tz_accepted(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("TZ", "America/New_York")
+        s = Settings(_env_file=None)
+        assert s.tz == "America/New_York"
+
 
 class TestSettingsMemoization:
     def test_get_settings_is_memoized(self, clean_settings):

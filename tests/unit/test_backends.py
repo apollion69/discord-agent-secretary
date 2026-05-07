@@ -90,46 +90,65 @@ class TestMakeBackend:
         s = Settings(_env_file=None)
         assert isinstance(make_backend(s), MulticaBackend)
 
-    def test_github_backend_constructs(self, monkeypatch, clean_settings) -> None:
+    def test_github_backend_construction_fails_fast(
+        self, monkeypatch, clean_settings
+    ) -> None:
         monkeypatch.setenv("BACKEND", "github")
         monkeypatch.setenv("GITHUB_TOKEN", "ghp_x")
         monkeypatch.setenv("GITHUB_REPO", "owner/repo")
         s = Settings(_env_file=None)
-        backend = make_backend(s)
-        assert isinstance(backend, GitHubBackend)
+        with pytest.raises(NotImplementedError):
+            make_backend(s)
 
-    def test_linear_backend_constructs(self, monkeypatch, clean_settings) -> None:
+    def test_linear_backend_construction_fails_fast(
+        self, monkeypatch, clean_settings
+    ) -> None:
         monkeypatch.setenv("BACKEND", "linear")
         s = Settings(_env_file=None)
-        backend = make_backend(s)
-        assert isinstance(backend, LinearBackend)
+        with pytest.raises(NotImplementedError):
+            make_backend(s)
 
-    def test_jira_backend_constructs(self, monkeypatch, clean_settings) -> None:
+    def test_jira_backend_construction_fails_fast(
+        self, monkeypatch, clean_settings
+    ) -> None:
         monkeypatch.setenv("BACKEND", "jira")
         s = Settings(_env_file=None)
-        backend = make_backend(s)
-        assert isinstance(backend, JiraBackend)
-
-
-class TestStubBackendsNotImplemented:
-    """Stubs must raise NotImplementedError on call, not on construction."""
-
-    async def test_github_create_raises(self) -> None:
-        backend = GitHubBackend(token="t", repo="o/r")
         with pytest.raises(NotImplementedError):
-            await backend.create_issue("x")
+            make_backend(s)
 
-    async def test_linear_create_raises(self) -> None:
-        backend = LinearBackend(api_key="k", team_id="t")
-        with pytest.raises(NotImplementedError):
-            await backend.create_issue("x")
 
-    async def test_jira_create_raises(self) -> None:
-        backend = JiraBackend(
-            base_url="https://x.atlassian.net",
-            email="e@x.com",
-            api_token="t",
-            project_key="ABC",
-        )
+class TestStubBackendsFailFast:
+    """Stubs must raise NotImplementedError at construction time so a
+    misconfigured deployment exits immediately rather than at first use."""
+
+    def test_github_init_raises(self) -> None:
         with pytest.raises(NotImplementedError):
-            await backend.create_issue("x")
+            GitHubBackend(token="t", repo="o/r")
+
+    def test_linear_init_raises(self) -> None:
+        with pytest.raises(NotImplementedError):
+            LinearBackend(api_key="k", team_id="t")
+
+    def test_jira_init_raises(self) -> None:
+        with pytest.raises(NotImplementedError):
+            JiraBackend(
+                base_url="https://x.atlassian.net",
+                email="e@x.com",
+                api_token="t",
+                project_key="ABC",
+            )
+
+
+class TestProtocolAbcAlignment:
+    """Guard against drift between IssueBackend (Protocol) and IssueBackendBase."""
+
+    def test_method_signatures_match(self) -> None:
+        import inspect
+
+        methods = ("create_issue", "get_issue", "assign_issue", "update_status")
+        for name in methods:
+            proto_sig = inspect.signature(getattr(IssueBackend, name))
+            abc_sig = inspect.signature(getattr(IssueBackendBase, name))
+            assert proto_sig == abc_sig, (
+                f"{name} signature drift: Protocol={proto_sig} vs ABC={abc_sig}"
+            )

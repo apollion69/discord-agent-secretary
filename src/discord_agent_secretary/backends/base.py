@@ -48,7 +48,12 @@ class IssueRef:
 
 @runtime_checkable
 class IssueBackend(Protocol):
-    """Structural contract every backend must satisfy."""
+    """Structural contract every backend must satisfy.
+
+    Method signatures are duplicated in `IssueBackendBase` below — keep them
+    in sync. `tests/unit/test_backends.py::TestProtocolAbcAlignment` will
+    fail if they drift.
+    """
 
     async def create_issue(
         self,

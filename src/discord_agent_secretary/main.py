@@ -26,9 +26,33 @@ from .logging_setup import configure_logging
 logger = logging.getLogger(__name__)
 
 
+def _collect_secrets(settings: object) -> list[str]:
+    """Pull every secret-shaped setting for the log redactor.
+
+    Strings only; empties stay in — the filter drops anything below its
+    minimum length.
+    """
+    candidates: list[str] = []
+    for attr in (
+        "discord_bot_token",
+        "github_token",
+        "linear_api_key",
+        "jira_api_token",
+        "anthropic_api_key",
+    ):
+        value = getattr(settings, attr, "")
+        if isinstance(value, str):
+            candidates.append(value)
+    return candidates
+
+
 def main() -> int:
     settings = get_settings()
-    configure_logging(level=settings.log_level, fmt=settings.log_format)
+    configure_logging(
+        level=settings.log_level,
+        fmt=settings.log_format,
+        secrets=_collect_secrets(settings),
+    )
 
     if not settings.discord_bot_token:
         logger.critical("DISCORD_BOT_TOKEN missing — set it in .env or environment")
@@ -54,12 +78,25 @@ def main() -> int:
         )
         for guild in client.guilds:
             bot_member = guild.get_member(user.id) if user else None
+            if bot_member is None and user is not None:
+                # Cache miss — try a one-shot REST fetch before refusing.
+                try:
+                    bot_member = await guild.fetch_member(user.id)
+                except discord.HTTPException as e:
+                    logger.warning(
+                        "fetch_member failed",
+                        extra={"guild_id": guild.id, "detail": str(e)},
+                    )
             if bot_member is None:
-                logger.warning(
-                    "bot membership unresolved",
+                # Refuse to start in any guild where we can't verify perms.
+                # Better a hard abort than running with unknown authority.
+                logger.critical(
+                    "refusing to run: bot membership unresolved",
                     extra={"guild_id": guild.id, "guild_name": guild.name},
                 )
-                continue
+                state["aborted"] = True
+                await client.close()
+                return
             try:
                 assert_safe_permissions(guild, bot_member)
             except UnsafePermissionsError as e:

@@ -48,10 +48,10 @@ _DEFAULT_TIMEOUT: Final = 8.0
 
 def _strip_preamble(raw: str) -> str:
     """Drop leading non-JSON lines (e.g. 'Showing 5 of 12 items.')."""
-    for i, line in enumerate(raw.splitlines()):
-        stripped = line.lstrip()
-        if stripped.startswith(("{", "[")):
-            return "\n".join(raw.splitlines()[i:])
+    lines = raw.splitlines()
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith(("{", "[")):
+            return "\n".join(lines[i:])
     return raw
 
 
@@ -120,9 +120,16 @@ class MulticaBackend(IssueBackendBase):
                 f"multica CLI timed out after {self._timeout}s"
             ) from err
 
+        if proc.returncode is None:
+            # communicate() returned but the child somehow has no exit
+            # status — treat as a CLI failure rather than silently OK'ing.
+            raise MulticaCliError(
+                exit_code=-1,
+                stderr="multica CLI returned without an exit status",
+            )
         if proc.returncode != 0:
             raise MulticaCliError(
-                exit_code=proc.returncode or -1,
+                exit_code=proc.returncode,
                 stderr=stderr.decode("utf-8", errors="replace"),
             )
         return stdout
