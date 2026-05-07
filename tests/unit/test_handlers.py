@@ -155,6 +155,18 @@ class TestRateLimiter:
         assert limiter.acquire("a") is False
         assert limiter.acquire("b") is True
 
+    def test_stale_buckets_evicted(self) -> None:
+        now = [0.0]
+        limiter = RateLimiter(capacity=5, refill_per_sec=0.0, clock=lambda: now[0])
+        limiter._EVICT_EVERY = 3  # type: ignore[assignment]
+        limiter._BUCKET_TTL = 10.0  # type: ignore[assignment]
+        limiter.acquire("old-key")  # call 1 — last-seen = 0.0
+        now[0] = 20.0  # advance past TTL
+        limiter.acquire("new-key")  # call 2
+        limiter.acquire("new-key")  # call 3 — triggers evict
+        assert "old-key" not in limiter._buckets
+        assert "new-key" in limiter._buckets
+
 
 class TestUnexpectedBackendError:
     async def test_unknown_backend_error_maps_to_user_fail(self) -> None:

@@ -40,7 +40,9 @@ class MulticaCliError(BackendCallError):
     def __init__(self, exit_code: int, stderr: str) -> None:
         self.exit_code = exit_code
         self.stderr = stderr
-        super().__init__(f"multica exited {exit_code}: {stderr.strip()}")
+        stripped = stderr.strip()
+        safe = stripped[:_STDERR_LOG_CAP] + ("…" if len(stripped) > _STDERR_LOG_CAP else "")
+        super().__init__(f"multica exited {exit_code}: {safe}")
 
 
 class MulticaParseError(BackendParseError):
@@ -53,6 +55,7 @@ _DEFAULT_CLI: Final = "multica"
 _DEFAULT_TIMEOUT: Final = 8.0
 _DEFAULT_OUTPUT_LIMIT: Final = 10 * 1024 * 1024  # 10 MiB
 _REAP_TIMEOUT: Final = 2.0
+_STDERR_LOG_CAP: Final = 300  # chars; prevents 10 MiB CLI errors flooding logs
 
 
 def _strip_preamble(raw: str) -> str:

@@ -60,9 +60,15 @@ class RateLimiter:
 
     Default budget — 5 commands burst, refill 1 token / 2 s — keeps the
     backend safe from a single member spamming `/task` while leaving normal
-    interactive use unaffected. State is in-process and unbounded; for
-    multi-replica deployments swap in a shared store.
+    interactive use unaffected. State is in-process; for multi-replica
+    deployments swap in a shared store (Redis, Memcached).
+
+    Stale buckets are evicted every `_EVICT_EVERY` calls to prevent
+    unbounded memory growth on long-running bots with many unique users.
     """
+
+    _EVICT_EVERY = 1_000
+    _BUCKET_TTL = 60.0 * 60 * 24  # 24 h idle → evict
 
     def __init__(
         self,
@@ -75,9 +81,17 @@ class RateLimiter:
         self.refill = refill_per_sec
         self._clock = clock
         self._buckets: dict[Hashable, tuple[float, float]] = {}
+        self._calls = 0
+
+    def _evict(self, now: float) -> None:
+        cutoff = now - self._BUCKET_TTL
+        self._buckets = {k: v for k, v in self._buckets.items() if v[1] >= cutoff}
 
     def acquire(self, key: Hashable, cost: float = 1.0) -> bool:
         now = self._clock()
+        self._calls += 1
+        if self._calls % self._EVICT_EVERY == 0:
+            self._evict(now)
         tokens, last = self._buckets.get(key, (float(self.capacity), now))
         tokens = min(self.capacity, tokens + (now - last) * self.refill)
         if tokens < cost:

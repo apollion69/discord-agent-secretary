@@ -100,6 +100,12 @@ class CircuitBreaker:
     fast-fails for `reset_timeout` seconds. The next call after the cool-down
     runs in half-open state — a success closes the circuit, another failure
     re-opens it. Successes inside `CLOSED` reset the failure counter.
+
+    Thread-safety note: `before_call`, `on_success`, and `on_failure` are
+    synchronous and contain no `await` points. Inside the asyncio event loop,
+    coroutine switching only occurs at `await`. These methods therefore run
+    atomically — no threading.Lock is required as long as the breaker is used
+    exclusively from coroutines on a single event loop (the standard case).
     """
 
     def __init__(

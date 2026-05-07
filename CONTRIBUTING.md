@@ -55,12 +55,23 @@ your_tracker_api_key: str = Field(default="", description="...")
 
 ### Step 3 — Wire the factory
 
-In `src/discord_agent_secretary/backends/__init__.py`, add to `make_backend()`:
+In `src/discord_agent_secretary/backends/__init__.py`:
+
+1. Add a builder function:
 
 ```python
-if name == "your_tracker":
+def _build_your_tracker(settings: Settings) -> IssueBackend:
     from .your_tracker import YourTrackerBackend
     return YourTrackerBackend(api_key=settings.your_tracker_api_key)
+```
+
+2. Register it in `_BACKEND_BUILDERS`:
+
+```python
+_BACKEND_BUILDERS: dict[str, Callable[[Settings], IssueBackend]] = {
+    ...
+    "your_tracker": _build_your_tracker,
+}
 ```
 
 Also add `"your_tracker"` to the `BackendName` literal in `config.py`.
