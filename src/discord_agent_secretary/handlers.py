@@ -13,7 +13,8 @@ subclasses for log richness.
 from __future__ import annotations
 
 import logging
-from typing import Final
+from collections.abc import Coroutine
+from typing import Any, Final, TypeVar
 
 import discord
 from discord import app_commands
@@ -24,6 +25,8 @@ from .backends import (
     BackendTimeoutError,
     IssueBackend,
 )
+
+_T = TypeVar("_T")
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +46,10 @@ _USER_TIMEOUT: Final[str] = "⏱️ Бэкенд не ответил вовре�
 
 async def _safe_invoke(
     interaction: discord.Interaction,
-    coro,
+    coro: Coroutine[Any, Any, _T],
     *,
     label: str,
-) -> object | None:
+) -> _T | None:
     """Run an awaitable, map errors to sanitized Discord replies.
 
     Returns the awaitable's value on success, None on handled error.
