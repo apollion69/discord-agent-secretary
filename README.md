@@ -173,6 +173,24 @@ ruff check src tests
 mypy src
 ```
 
+See [`docs/local-development.md`](docs/local-development.md) for smoke-test
+recipes that don't require the Multica CLI binary.
+
+---
+
+## Security
+
+To report a vulnerability, see [`SECURITY.md`](SECURITY.md). For deployment
+hardening recommendations and the threat model, see
+[`docs/threat-model.md`](docs/threat-model.md).
+
+---
+
+## Changelog
+
+[`CHANGELOG.md`](CHANGELOG.md) tracks release notes and the running
+`[Unreleased]` section.
+
 ---
 
 ## License

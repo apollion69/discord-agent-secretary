@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Final
 
 
@@ -55,15 +55,28 @@ def _cut(body: str, match: re.Match[str]) -> str:
     return body[: match.start()] + body[match.end() :]
 
 
-def parse_task(text: str, *, today: date | None = None) -> ParsedTask:
+def parse_task(
+    text: str,
+    *,
+    today: date | None = None,
+    tz: str | None = None,
+) -> ParsedTask:
     """Parse a `/task`-style command into structured fields.
 
     Unmatched text becomes the title (whitespace-collapsed). `today` is
     overridable for deterministic relative-date tests (see conftest
-    `frozen_today` fixture).
+    `frozen_today` fixture). When `today` is omitted and `tz` is given,
+    "now" is computed in that IANA zone — production callers should pass
+    `settings.tz` so a deadline of "за 2 дня" written at 23:30 local time
+    doesn't roll a day depending on UTC drift.
     """
     if today is None:
-        today = date.today()
+        if tz is not None:
+            from zoneinfo import ZoneInfo
+
+            today = datetime.now(ZoneInfo(tz)).date()
+        else:
+            today = date.today()
 
     body = _CMD_PREFIX.sub("", text, count=1).strip()
 
@@ -86,8 +99,27 @@ def parse_task(text: str, *, today: date | None = None) -> ParsedTask:
         deadline = f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
         body = _cut(body, m)
     elif m := _DATE_RU_SHORT.search(body):
-        deadline = f"{today.year}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
-        body = _cut(body, m)
+        # Bare "DD.MM" — no year given. Default to the current year, but
+        # roll forward if that date already passed; secretaries virtually
+        # never mean "last March" when they say "до 5.04".
+        month = int(m.group(2))
+        day = int(m.group(1))
+        try:
+            candidate = date(today.year, month, day)
+        except ValueError:
+            candidate = None
+        if candidate is None:
+            # Invalid like "31.02" — leave deadline unset and keep the body
+            # alone so the title surface still shows what the user typed.
+            pass
+        else:
+            if candidate < today:
+                try:
+                    candidate = date(today.year + 1, month, day)
+                except ValueError:
+                    pass
+            deadline = candidate.isoformat()
+            body = _cut(body, m)
     elif m := _REL_EN.search(body):
         deadline = (today + timedelta(days=int(m.group(1)))).isoformat()
         body = _cut(body, m)

@@ -192,10 +192,10 @@ def register_handlers(
     )
     async def task_cmd(
         interaction: discord.Interaction,
-        title: str,
-        description: str | None = None,
+        title: app_commands.Range[str, 1, 300],
+        description: app_commands.Range[str, 1, 2000] | None = None,
         priority: app_commands.Choice[str] | None = None,
-        assignee: str | None = None,
+        assignee: app_commands.Range[str, 1, 200] | None = None,
     ) -> None:
         if not await _enforce_rate_limit(interaction):
             return
@@ -228,7 +228,7 @@ def register_handlers(
     )
     async def status_cmd(
         interaction: discord.Interaction,
-        issue_id: str,
+        issue_id: app_commands.Range[str, 1, 200],
         status: app_commands.Choice[str],
     ) -> None:
         if not await _enforce_rate_limit(interaction):
@@ -254,8 +254,8 @@ def register_handlers(
     @app_commands.describe(issue_id="ID задачи", to="Кого назначить")
     async def assign_cmd(
         interaction: discord.Interaction,
-        issue_id: str,
-        to: str,
+        issue_id: app_commands.Range[str, 1, 200],
+        to: app_commands.Range[str, 1, 200],
     ) -> None:
         if not await _enforce_rate_limit(interaction):
             return
