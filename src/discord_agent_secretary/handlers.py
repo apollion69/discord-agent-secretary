@@ -26,6 +26,7 @@ from .backends import (
     BackendCallError,
     BackendError,
     BackendTimeoutError,
+    CircuitOpenError,
     IssueBackend,
 )
 
@@ -47,6 +48,10 @@ _USER_FAIL: Final[str] = (
 _USER_TIMEOUT: Final[str] = "⏱️ Бэкенд не ответил вовремя. Попробуй ещё раз."
 _USER_RATE_LIMITED: Final[str] = (
     "🛑 Слишком часто. Попробуй ещё раз через несколько секунд."
+)
+_USER_CIRCUIT_OPEN: Final[str] = (
+    "⚡ Трекер сейчас недоступен — повторим попытки автоматически чуть позже. "
+    "Ничего делать не нужно."
 )
 
 
@@ -127,6 +132,9 @@ async def _safe_invoke(
     ctx = _ctx_extra(interaction)
     try:
         return await coro
+    except CircuitOpenError:
+        logger.warning("%s short-circuited (breaker open)", label, extra=ctx)
+        await _safe_followup(interaction, _USER_CIRCUIT_OPEN, ephemeral=True)
     except BackendTimeoutError:
         logger.warning("%s timed out", label, extra=ctx)
         await _safe_followup(interaction, _USER_TIMEOUT, ephemeral=True)

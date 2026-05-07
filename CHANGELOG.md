@@ -9,6 +9,23 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Backend resilience helpers** in `backends/base.py`:
+  `with_retry()` (bounded exponential-backoff retry, applied only to
+  idempotent methods like `get_issue`, `update_status`, `assign_issue`)
+  and `CircuitBreaker` (closed/open/half-open with configurable
+  threshold + cool-down). `MulticaBackend` opts in to both. The
+  breaker fast-fails with a new `CircuitOpenError` so handlers send a
+  dedicated ephemeral message rather than the generic timeout reply.
+- **HTTP healthcheck server** (`health.start_healthcheck`) — stdlib
+  `http.server` in a daemon thread, exposing `/livez` (always 200 if
+  the process responds) and `/readyz` (200 only when
+  `discord.Client.is_ready()`). Disabled by default
+  (`HEALTHCHECK_PORT=0`); set the env var to a TCP port to enable.
+- **Output-size cap** for the Multica CLI (`MULTICA_CLI_OUTPUT_BYTE_LIMIT`,
+  default 10 MiB). A misbehaving CLI that pours gigabytes is killed
+  before consuming process memory.
+- `Operating System :: MacOS :: MacOS X` classifier — code already
+  worked on macOS, the metadata now reflects it.
 - `SECURITY.md` describing the private vulnerability reporting channel.
 - `RateLimiter` (token bucket, 5-burst / 1 token per 2 s, keyed by
   `(guild_id, user_id)`) protects the backend from a single member
@@ -58,6 +75,9 @@ and the project follows [Semantic Versioning](https://semver.org/).
   raise `NotImplementedError` from their `__init__` — a misconfigured
   `BACKEND=github` deployment now fails at boot, not on the first
   user-visible `/task`.
+- `make_backend` now dispatches via a `_BACKEND_BUILDERS` dict instead
+  of an if/elif chain — the supported-backends list in error messages
+  derives from the registry.
 - `_safe_invoke` routes every error reply through ephemeral followups
   so backend health signals don't leak into the public channel.
 - `_safe_followup` wraps `interaction.followup.send` with an HTTP-error

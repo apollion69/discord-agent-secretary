@@ -65,6 +65,26 @@ embedded a secret.
 and never reaches the backend, capping subprocess churn / API quota burn.
 State is in-process; multi-replica deployments need a shared store.
 
+### Circuit breaker + bounded retry
+`backends.base.CircuitBreaker` (closed / open / half-open) wraps the
+Multica backend's CLI invocations. After
+`BACKEND_CIRCUIT_FAILURE_THRESHOLD` consecutive failures the circuit opens
+for `BACKEND_CIRCUIT_RESET_TIMEOUT` seconds, fast-failing every call with
+`CircuitOpenError` (handler shows a dedicated ephemeral message). Idempotent
+methods (`get_issue`, `update_status`, `assign_issue`) wrap one bounded
+retry via `with_retry`; `create_issue` does not, to avoid duplicates.
+
+### Output cap on subprocess CLI
+`MULTICA_CLI_OUTPUT_BYTE_LIMIT` (default 10 MiB) is enforced per call.
+A misbehaving CLI that produces gigabytes is killed (`SIGKILL`) and reaped
+before its output can consume the bot's process memory.
+
+### Optional healthcheck server
+`HEALTHCHECK_PORT` (default `0`, disabled) starts a stdlib HTTP server in
+a daemon thread exposing `/livez` and `/readyz`. The server has no auth
+and answers anyone who can reach the bind address — keep it bound to
+loopback or the cluster network, never to the public internet.
+
 ### No Message Content intent
 The bot requests only `guilds` and `guild_messages` intents. It cannot read
 arbitrary messages — only slash command payloads directed at it explicitly.

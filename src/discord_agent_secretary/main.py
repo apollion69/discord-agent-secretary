@@ -21,6 +21,7 @@ from .discord_client import (
     build_client,
 )
 from .handlers import register_handlers
+from .health import start_healthcheck
 from .logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,11 @@ def main() -> int:
 
     client, tree = build_client()
     register_handlers(tree, backend, settings.discord_guild_id)
+
+    health_handle = start_healthcheck(
+        settings.healthcheck_port,
+        is_ready=client.is_ready,
+    )
 
     # Mutable state shared with the on_ready closure. `aborted` lets us
     # surface a non-zero exit when the bot refuses to run; `synced` keeps
@@ -145,6 +151,9 @@ def main() -> int:
         return 1
     except KeyboardInterrupt:
         return 0
+    finally:
+        if health_handle is not None:
+            health_handle.shutdown()
 
     return 1 if state["aborted"] else 0
 
