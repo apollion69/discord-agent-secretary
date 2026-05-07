@@ -115,6 +115,29 @@ class TestSettingsValidation:
         s = Settings(_env_file=None)
         assert s.tz == "America/New_York"
 
+    def test_output_byte_limit_default(self, clean_settings):
+        s = Settings(_env_file=None)
+        assert s.multica_cli_output_byte_limit == 10 * 1024 * 1024
+
+    def test_output_byte_limit_lower_bound(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("MULTICA_CLI_OUTPUT_BYTE_LIMIT", "100")
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None)
+
+    def test_circuit_threshold_bounds(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("BACKEND_CIRCUIT_FAILURE_THRESHOLD", "0")
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None)
+
+    def test_healthcheck_port_bounds(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("HEALTHCHECK_PORT", "70000")
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None)
+
+    def test_healthcheck_port_default_disabled(self, clean_settings):
+        s = Settings(_env_file=None)
+        assert s.healthcheck_port == 0
+
 
 class TestSettingsMemoization:
     def test_get_settings_is_memoized(self, clean_settings):

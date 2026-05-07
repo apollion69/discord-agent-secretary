@@ -86,6 +86,34 @@ class Settings(BaseSettings):
     multica_default_assignee: str = Field(default="", description="Default assignee ID/name")
     multica_cli_path: str = Field(default="", description="Absolute path to multica CLI; empty = autodetect")
     multica_cli_timeout: float = Field(default=8.0, ge=0.5, le=60.0)
+    multica_cli_output_byte_limit: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1024,
+        le=512 * 1024 * 1024,
+        description="Per-call cap on combined stdout/stderr bytes; over the limit the CLI is killed.",
+    )
+
+    # === Backend resilience knobs (apply to every backend that opts in) ===
+    backend_circuit_failure_threshold: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        description="Consecutive failures before the per-backend circuit breaker opens.",
+    )
+    backend_circuit_reset_timeout: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=600.0,
+        description="Cool-down (seconds) before the open circuit moves to half-open.",
+    )
+
+    # === Healthcheck ===
+    healthcheck_port: int = Field(
+        default=0,
+        ge=0,
+        le=65535,
+        description="TCP port for the /livez and /readyz HTTP endpoints; 0 disables.",
+    )
 
     # === GitHub backend ===
     github_token: str = Field(default="", description="GitHub PAT or App-installation token")

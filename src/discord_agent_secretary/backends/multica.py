@@ -3,7 +3,8 @@
 Async wrapper around the `multica` CLI binary. Uses asyncio's argv-form
 process spawn (argv list, never a shell string) so untrusted arguments
 cannot perform command injection. All calls route through a single
-`_invoke` helper that enforces a timeout and raises typed errors.
+`_invoke` helper that enforces a timeout, an output-size cap, a
+circuit breaker, and (for idempotent calls only) a small bounded retry.
 
 This module owns Multica-specific error subtypes (`MulticaCliError`,
 `MulticaCliTimeoutError`, `MulticaParseError`); each inherits the corresponding
@@ -20,8 +21,11 @@ from .base import (
     BackendCallError,
     BackendParseError,
     BackendTimeoutError,
+    CircuitBreaker,
+    CircuitOpenError,
     IssueBackendBase,
     IssueRef,
+    with_retry,
 )
 
 
@@ -30,7 +34,7 @@ class MulticaCliTimeoutError(BackendTimeoutError):
 
 
 class MulticaCliError(BackendCallError):
-    """The `multica` CLI exited non-zero."""
+    """The `multica` CLI exited non-zero, was killed, or overflowed output."""
 
     def __init__(self, exit_code: int, stderr: str) -> None:
         self.exit_code = exit_code
@@ -44,6 +48,8 @@ class MulticaParseError(BackendParseError):
 
 _DEFAULT_CLI: Final = "multica"
 _DEFAULT_TIMEOUT: Final = 8.0
+_DEFAULT_OUTPUT_LIMIT: Final = 10 * 1024 * 1024  # 10 MiB
+_REAP_TIMEOUT: Final = 2.0
 
 
 def _strip_preamble(raw: str) -> str:
@@ -79,11 +85,27 @@ def _to_issue_ref(data: Any) -> IssueRef:
     )
 
 
+async def _read_capped(stream: asyncio.StreamReader, limit: int) -> tuple[bytes, bool]:
+    """Read up to `limit + 1` bytes; flag overflow if the cap is exceeded."""
+    data = await stream.read(limit + 1)
+    return data, len(data) > limit
+
+
+async def _reap(proc: asyncio.subprocess.Process) -> None:
+    """Wait for a (likely killed) child to exit, capped so we can't hang."""
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=_REAP_TIMEOUT)
+    except TimeoutError:
+        pass
+
+
 class MulticaBackend(IssueBackendBase):
     """`IssueBackend` implementation backed by the `multica` CLI.
 
     Instantiate once per process; safe across coroutines since each call
-    spawns an isolated child process.
+    spawns an isolated child process. The instance also owns a single
+    `CircuitBreaker` shared across coroutines — a quick stream of timeouts
+    opens the circuit and subsequent calls fast-fail until the cool-down.
     """
 
     def __init__(
@@ -92,37 +114,79 @@ class MulticaBackend(IssueBackendBase):
         cli_path: str = _DEFAULT_CLI,
         workspace_id: str = "",
         timeout: float = _DEFAULT_TIMEOUT,
+        output_byte_limit: int = _DEFAULT_OUTPUT_LIMIT,
+        circuit_failure_threshold: int = 5,
+        circuit_reset_timeout: float = 30.0,
     ) -> None:
         self._cli_path = cli_path or _DEFAULT_CLI
         self._workspace_id = workspace_id
         self._timeout = timeout
+        self._output_byte_limit = output_byte_limit
+        self._circuit = CircuitBreaker(
+            failure_threshold=circuit_failure_threshold,
+            reset_timeout=circuit_reset_timeout,
+        )
+
+    @property
+    def circuit(self) -> CircuitBreaker:
+        return self._circuit
 
     async def _invoke(self, *args: str) -> bytes:
+        # Fast-fail without spawning if the breaker is open.
+        try:
+            self._circuit.before_call()
+        except CircuitOpenError:
+            raise
+
+        try:
+            stdout = await self._spawn_and_read(*args)
+        except (BackendTimeoutError, BackendCallError):
+            self._circuit.on_failure()
+            raise
+        # Parse errors are raised later; success here means the CLI exited
+        # cleanly with output under the cap, which is what the breaker cares
+        # about.
+        self._circuit.on_success()
+        return stdout
+
+    async def _spawn_and_read(self, *args: str) -> bytes:
         proc = await asyncio.create_subprocess_exec(
             self._cli_path,
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        # `proc.stdout` / `proc.stderr` are guaranteed non-None when both
+        # are PIPE'd, but mypy can't narrow that — assert for clarity.
+        assert proc.stdout is not None and proc.stderr is not None
+
         try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=self._timeout
+            (stdout, stdout_over), (stderr, stderr_over) = await asyncio.wait_for(
+                asyncio.gather(
+                    _read_capped(proc.stdout, self._output_byte_limit),
+                    _read_capped(proc.stderr, self._output_byte_limit),
+                ),
+                timeout=self._timeout,
             )
         except TimeoutError as err:
             proc.kill()
-            # Reap the child so it doesn't linger as a zombie. Bound the
-            # wait so a process ignoring SIGKILL can't hang us forever.
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=2.0)
-            except TimeoutError:
-                pass
+            await _reap(proc)
             raise MulticaCliTimeoutError(
                 f"multica CLI timed out after {self._timeout}s"
             ) from err
 
+        if stdout_over or stderr_over:
+            proc.kill()
+            await _reap(proc)
+            raise MulticaCliError(
+                exit_code=-1,
+                stderr=(
+                    f"multica CLI exceeded {self._output_byte_limit}-byte output cap"
+                ),
+            )
+
+        await _reap(proc)
         if proc.returncode is None:
-            # communicate() returned but the child somehow has no exit
-            # status — treat as a CLI failure rather than silently OK'ing.
             raise MulticaCliError(
                 exit_code=-1,
                 stderr="multica CLI returned without an exit status",
@@ -142,6 +206,8 @@ class MulticaBackend(IssueBackendBase):
         priority: str | None = None,
         assignee: str | None = None,
     ) -> IssueRef:
+        # NOT retried: a partial first attempt may have created an issue —
+        # retrying would risk duplicates. The circuit breaker still applies.
         args = ["issue", "create", "--title", title, "--output", "json"]
         if description:
             args += ["--description", description]
@@ -153,17 +219,26 @@ class MulticaBackend(IssueBackendBase):
         return _to_issue_ref(_parse_json_output(raw))
 
     async def get_issue(self, issue_id: str) -> IssueRef:
-        raw = await self._invoke("issue", "get", issue_id, "--output", "json")
+        raw = await with_retry(
+            lambda: self._invoke("issue", "get", issue_id, "--output", "json"),
+            retry_on=(BackendTimeoutError,),
+        )
         return _to_issue_ref(_parse_json_output(raw))
 
     async def assign_issue(self, issue_id: str, to: str) -> IssueRef:
-        raw = await self._invoke(
-            "issue", "assign", issue_id, "--to", to, "--output", "json"
+        raw = await with_retry(
+            lambda: self._invoke(
+                "issue", "assign", issue_id, "--to", to, "--output", "json"
+            ),
+            retry_on=(BackendTimeoutError,),
         )
         return _to_issue_ref(_parse_json_output(raw))
 
     async def update_status(self, issue_id: str, status: str) -> IssueRef:
-        raw = await self._invoke(
-            "issue", "status", issue_id, status, "--output", "json"
+        raw = await with_retry(
+            lambda: self._invoke(
+                "issue", "status", issue_id, status, "--output", "json"
+            ),
+            retry_on=(BackendTimeoutError,),
         )
         return _to_issue_ref(_parse_json_output(raw))

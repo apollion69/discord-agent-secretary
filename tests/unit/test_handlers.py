@@ -172,6 +172,23 @@ class TestUnexpectedBackendError:
         assert kwargs.get("ephemeral") is True
 
 
+class TestCircuitOpenPath:
+    async def test_circuit_open_uses_dedicated_message(self) -> None:
+        from discord_agent_secretary.backends import CircuitOpenError
+        from discord_agent_secretary.handlers import _safe_invoke
+
+        interaction = _make_interaction()
+
+        async def boom() -> None:
+            raise CircuitOpenError("breaker tripped")
+
+        result = await _safe_invoke(interaction, boom(), label="test")
+        assert result is None
+        msg = interaction.followup.send.call_args.args[0]
+        assert "недоступен" in msg or "Tracker" in msg
+        assert interaction.followup.send.call_args.kwargs.get("ephemeral") is True
+
+
 class TestStatusAndAssignHappyPaths:
     """Round-trip the closures registered by `register_handlers`."""
 
