@@ -8,6 +8,7 @@ server-admin authority.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Final
 
 import discord
@@ -65,6 +66,7 @@ def build_client() -> tuple[discord.Client, app_commands.CommandTree]:
     Caller adds commands via `tree.command()` decorators, then runs the client
     with `client.run(token)`.
     """
-    client = discord.Client(intents=build_intents())
+    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or None
+    client = discord.Client(intents=build_intents(), proxy=proxy)
     tree = app_commands.CommandTree(client)
     return client, tree
