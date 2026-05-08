@@ -21,6 +21,7 @@ pytestmark = pytest.mark.unit
 
 
 def _make_member(
+    guild_id: int = 123,
     *,
     administrator: bool = False,
     manage_guild: bool = False,
@@ -33,20 +34,27 @@ def _make_member(
     view_channel: bool = True,
     send_messages: bool = True,
 ) -> MagicMock:
-    """Build a mock `discord.Member` whose `guild_permissions` mirrors inputs."""
-    perms = MagicMock(spec=discord.Permissions)
-    perms.administrator = administrator
-    perms.manage_guild = manage_guild
-    perms.manage_roles = manage_roles
-    perms.manage_channels = manage_channels
-    perms.manage_webhooks = manage_webhooks
-    perms.ban_members = ban_members
-    perms.kick_members = kick_members
-    perms.mention_everyone = mention_everyone
-    perms.view_channel = view_channel
-    perms.send_messages = send_messages
+    """Build a mock `discord.Member` with one bot-specific role bearing the given permissions.
+
+    Role id is guild_id + 1 so it is never equal to guild.id and is always
+    included in the own_roles check inside assert_safe_permissions.
+    """
+    bot_role = MagicMock()
+    bot_role.id = guild_id + 1
+    bot_role.permissions = discord.Permissions(
+        administrator=administrator,
+        manage_guild=manage_guild,
+        manage_roles=manage_roles,
+        manage_channels=manage_channels,
+        manage_webhooks=manage_webhooks,
+        ban_members=ban_members,
+        kick_members=kick_members,
+        mention_everyone=mention_everyone,
+        view_channel=view_channel,
+        send_messages=send_messages,
+    )
     member = MagicMock(spec=discord.Member)
-    member.guild_permissions = perms
+    member.roles = [bot_role]
     return member
 
 
@@ -78,7 +86,7 @@ class TestAssertSafePermissions:
 
     def test_blocks_administrator(self) -> None:
         guild = _make_guild(guild_id=42, name="danger")
-        member = _make_member(administrator=True)
+        member = _make_member(42, administrator=True)
         with pytest.raises(UnsafePermissionsError) as exc:
             assert_safe_permissions(guild, member)
         assert "administrator" in str(exc.value).lower()

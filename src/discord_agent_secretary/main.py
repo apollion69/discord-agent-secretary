@@ -95,17 +95,24 @@ async def resolve_bot_member(
 async def verify_guilds_safe(client: discord.Client) -> bool:
     """Verify bot permissions in every connected guild.
 
+    Always fetches member data via REST — never the local cache — so the
+    permission check uses Discord's authoritative current state regardless
+    of what the GUILD_CREATE event cached locally.
+
     Returns False (and logs CRITICAL) on the first unsafe guild or
     unresolvable membership. Caller must abort if False.
     """
     user = client.user
     bot_user_id = user.id if user else None
+    if bot_user_id is None:
+        return True
     for guild in client.guilds:
-        bot_member = await resolve_bot_member(guild, bot_user_id)
-        if bot_member is None:
+        try:
+            bot_member = await guild.fetch_member(bot_user_id)
+        except discord.HTTPException as exc:
             logger.critical(
                 "refusing to run: bot membership unresolved",
-                extra={"guild_id": guild.id, "guild_name": guild.name},
+                extra={"guild_id": guild.id, "guild_name": guild.name, "detail": str(exc)},
             )
             return False
         try:

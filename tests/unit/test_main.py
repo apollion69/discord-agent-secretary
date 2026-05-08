@@ -112,14 +112,9 @@ class TestVerifyGuildsSafe:
         client.user = MagicMock(id=42)
         guild = MagicMock(id=1, name="ok")
         member = MagicMock()
-        member.guild_permissions = MagicMock()
-        # Set ALL perm flags False on the mock — REFUSE_PERMS lookup uses getattr.
-        for attr in (
-            "administrator", "manage_guild", "manage_roles", "manage_channels",
-            "manage_webhooks", "ban_members", "kick_members", "mention_everyone",
-        ):
-            setattr(member.guild_permissions, attr, False)
-        guild.get_member.return_value = member
+        # No roles → own_roles = [] → no violations.
+        member.roles = []
+        guild.fetch_member = AsyncMock(return_value=member)
         client.guilds = [guild]
         assert await verify_guilds_safe(client) is True
 
@@ -127,7 +122,6 @@ class TestVerifyGuildsSafe:
         client = MagicMock()
         client.user = MagicMock(id=42)
         guild = MagicMock(id=1, name="hidden")
-        guild.get_member.return_value = None
         guild.fetch_member = AsyncMock(
             side_effect=discord.HTTPException(
                 response=MagicMock(status=403, reason="forbidden"),
@@ -146,17 +140,13 @@ class TestVerifyGuildsSafe:
         client.user = MagicMock(id=42)
         guild = MagicMock(id=1, name="bad")
         member = MagicMock()
-        # Build a bot-specific role (id != guild.id) with administrator=True.
-        # The @everyone role (id == guild.id) is excluded by assert_safe_permissions
-        # so the dangerous perm must come from a bot-specific role to trigger the check.
+        # REST returns only explicitly assigned roles — no @everyone.
+        # A bot-specific role (id != guild.id) with administrator=True triggers refusal.
         bot_role = MagicMock()
         bot_role.id = 999  # not guild.id (1)
         bot_role.permissions = discord.Permissions(administrator=True)
-        everyone_role = MagicMock()
-        everyone_role.id = guild.id  # @everyone — excluded from check
-        everyone_role.permissions = discord.Permissions.none()
-        member.roles = [everyone_role, bot_role]
-        guild.get_member.return_value = member
+        member.roles = [bot_role]
+        guild.fetch_member = AsyncMock(return_value=member)
         client.guilds = [guild]
 
         with caplog.at_level(logging.CRITICAL):
@@ -171,7 +161,7 @@ class TestVerifyGuildsSafe:
         client.user = MagicMock(id=42)
         guild = MagicMock(id=1, name="oops")
         member = MagicMock()
-        guild.get_member.return_value = member
+        guild.fetch_member = AsyncMock(return_value=member)
         client.guilds = [guild]
         with patch(
             "discord_agent_secretary.main.assert_safe_permissions",
@@ -186,7 +176,7 @@ class TestVerifyGuildsSafe:
         guild = MagicMock(id=1, name="bad")
         member = MagicMock()
         client.guilds = [guild]
-        guild.get_member.return_value = member
+        guild.fetch_member = AsyncMock(return_value=member)
         with patch(
             "discord_agent_secretary.main.assert_safe_permissions",
             side_effect=UnsafePermissionsError("admin granted"),
