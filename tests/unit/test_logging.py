@@ -137,3 +137,36 @@ class TestSecretRedactingFilter:
         out = capsys.readouterr().out.strip()
         payload = json.loads(out)
         assert payload["msg"] == "just a message"
+
+    def test_secret_embedded_in_longer_string_still_redacted(self):
+        # Substring mutation guard: a future change from `if s in value` to
+        # `if s == value` would let secrets leak inside longer log lines.
+        # This test pins the substring-match contract.
+        secret = "abcdefgh-supersecret-xyz12"
+        f = SecretRedactingFilter([secret])
+        embedded = f"prefix_{secret}_suffix"
+        record = logging.LogRecord(
+            "t", logging.INFO, "x.py", 1, embedded, None, None
+        )
+        f.filter(record)
+        rendered = record.getMessage()
+        assert secret not in rendered
+        assert "***REDACTED***" in rendered
+
+    def test_longest_secret_redacted_first(self):
+        # When two secrets overlap (one is a prefix of the other), the
+        # longer one must be processed first to avoid leaving a partial
+        # leak. This pins the longest-first sort contract.
+        short = "abcdefgh"
+        long = "abcdefgh_PRIVATE_TAIL_XYZ"
+        f = SecretRedactingFilter([short, long])
+        record = logging.LogRecord(
+            "t", logging.INFO, "x.py", 1, f"see {long} here", None, None
+        )
+        f.filter(record)
+        rendered = record.getMessage()
+        # Short token must not appear bare — would indicate the short-first
+        # order chopped the long token in two.
+        assert short not in rendered
+        assert long not in rendered
+        assert rendered.count("***REDACTED***") == 1

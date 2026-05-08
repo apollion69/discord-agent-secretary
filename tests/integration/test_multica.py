@@ -8,11 +8,11 @@ stripping.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from discord_agent_secretary.backends import IssueRef
+from discord_agent_secretary.backends import CircuitState, IssueRef
 from discord_agent_secretary.backends.multica import (
     MulticaBackend,
     MulticaCliError,
@@ -192,6 +192,95 @@ class TestPreambleStripping:
             backend = MulticaBackend(cli_path="multica")
             ref = await backend.get_issue("VEN-9")
         assert ref == IssueRef(id="VEN-9", status="done", title=None)
+
+    async def test_array_prefix_after_preamble_is_kept(self):
+        # The strip-preamble guard recognises both `{` and `[` as valid
+        # JSON starts. This guards against a mutation that tightens to
+        # `{` only (which would silently drop array-shaped responses).
+        from discord_agent_secretary.backends.multica import _strip_preamble
+
+        body = "Listing 3 items.\n[{\"id\":\"A-1\"}]"
+        assert _strip_preamble(body) == "[{\"id\":\"A-1\"}]"
+
+
+class TestReapEdgeCases:
+    async def test_returncode_none_raises_cli_error(self):
+        # If the process exits but `returncode` stays None (e.g. wait()
+        # resolves but the OS doesn't set a status), the backend raises
+        # rather than returning garbage.
+        proc = _FakeProc(stdout=b'{"id":"VEN-3"}', returncode=None)
+        # _FakeProc.wait() returns 0 when returncode is None, but
+        # self.returncode stays None — that's the contract we're testing.
+        with _patch_spawn(proc):
+            backend = MulticaBackend(cli_path="multica")
+            with pytest.raises(MulticaCliError) as exc:
+                await backend.get_issue("VEN-3")
+        assert "without an exit status" in exc.value.stderr
+
+    async def test_reap_timeout_is_logged_as_warning(self, caplog):
+        # If the child is still alive after SIGKILL + _REAP_TIMEOUT, the
+        # backend logs SIGKILL timeout warning rather than hanging forever.
+        import logging
+        from unittest.mock import patch
+
+        from discord_agent_secretary.backends.multica import _reap
+
+        proc = MagicMock()
+        proc.pid = 999
+
+        async def _slow_wait():
+            import asyncio as _a
+            await _a.sleep(5)
+
+        proc.wait = _slow_wait
+
+        with caplog.at_level(logging.WARNING):
+            with patch(
+                "discord_agent_secretary.backends.multica._REAP_TIMEOUT",
+                new=0.01,
+            ):
+                await _reap(proc)
+
+        assert any(
+            "still running after SIGKILL" in r.message
+            for r in caplog.records
+        )
+
+    async def test_empty_string_id_raises_parse_error(self):
+        # `_to_issue_ref` must reject an id that is present but empty.
+        # Guards against a mutation that weakens `not issue_id` to `issue_id is None`.
+        proc = _FakeProc(stdout=b'{"id":""}')
+        with _patch_spawn(proc):
+            backend = MulticaBackend(cli_path="multica")
+            with pytest.raises(MulticaParseError):
+                await backend.create_issue("X")
+
+    async def test_non_dict_json_raises_parse_error(self):
+        # The output may be valid JSON but not an object — must raise,
+        # not fail with an AttributeError in _to_issue_ref.
+        proc = _FakeProc(stdout=b'"just a string"')
+        with _patch_spawn(proc):
+            backend = MulticaBackend(cli_path="multica")
+            with pytest.raises(MulticaParseError, match="expected JSON object"):
+                await backend.create_issue("X")
+
+
+class TestMulticaBackendCircuitProperty:
+    def test_circuit_property_exposes_breaker(self):
+        # Exposed for observability (Prometheus metrics, health endpoint).
+        backend = MulticaBackend(cli_path="multica")
+        assert backend.circuit.state == CircuitState.CLOSED
+
+    def test_stderr_log_cap_truncates_long_stderr(self):
+        from discord_agent_secretary.backends.multica import _STDERR_LOG_CAP, MulticaCliError
+
+        long_err = "x" * (_STDERR_LOG_CAP + 100)
+        err = MulticaCliError(exit_code=1, stderr=long_err)
+        # The stored full stderr is intact.
+        assert err.stderr == long_err
+        # The __str__ (passed to super().__init__) is truncated.
+        assert len(str(err)) < len(long_err) + 50
+        assert "…" in str(err)
 
 
 class TestOutputCap:

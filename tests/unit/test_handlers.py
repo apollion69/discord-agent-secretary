@@ -167,6 +167,117 @@ class TestRateLimiter:
         assert "old-key" not in limiter._buckets
         assert "new-key" in limiter._buckets
 
+    def test_exact_cost_boundary(self) -> None:
+        """tokens == cost must succeed; tokens < cost must fail. Guards the
+        `if tokens < cost` predicate against a `<=` mutation."""
+        limiter = RateLimiter(capacity=1, refill_per_sec=0.0)
+        # First acquire: tokens=1.0, cost=1.0 → 1.0 >= 1.0 → succeed.
+        assert limiter.acquire("k", cost=1.0) is True
+        # Second acquire: tokens=0.0, cost=1.0 → 0.0 < 1.0 → fail.
+        assert limiter.acquire("k", cost=1.0) is False
+
+    def test_zero_cost_always_succeeds(self) -> None:
+        # cost=0 is degenerate but shouldn't panic; always succeeds.
+        limiter = RateLimiter(capacity=1, refill_per_sec=0.0)
+        for _ in range(10):
+            assert limiter.acquire("k", cost=0.0) is True
+
+    def test_refill_capped_at_capacity(self) -> None:
+        clock = [0.0]
+        limiter = RateLimiter(capacity=2, refill_per_sec=10.0, clock=lambda: clock[0])
+        limiter.acquire("k")  # tokens: 2 -> 1
+        limiter.acquire("k")  # tokens: 1 -> 0
+        clock[0] = 100.0  # 100s × 10/s = 1000 tokens worth of refill
+        # Refill must be capped at capacity (2), not 1000.
+        assert limiter.acquire("k") is True  # tokens: 2 -> 1
+        assert limiter.acquire("k") is True  # tokens: 1 -> 0
+        assert limiter.acquire("k") is False  # tokens: 0
+
+
+class TestRateLimitReplyError:
+    """Cover the error path where Discord rejects the rate-limit reply itself."""
+
+    async def test_rate_limit_reply_http_error_swallowed(self) -> None:
+        """If `interaction.response.send_message` raises HTTPException
+        when emitting the rate-limit notice, the handler must not crash."""
+        from discord import HTTPException
+
+        from discord_agent_secretary.handlers import RateLimiter
+
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.create_issue = AsyncMock(
+            return_value=IssueRef(id="X-1", title="t")
+        )
+        limiter = RateLimiter(capacity=1, refill_per_sec=0.0)
+        register_handlers(tree, backend, guild_id=42, rate_limiter=limiter)
+
+        cmd = tree.get_command("task", guild=__import__("discord").Object(id=42))
+        assert cmd is not None
+        callback = cmd.callback
+
+        # First call drains the bucket.
+        i1 = _make_interaction(user_id=99, guild_id=42)
+        i1.response.defer = AsyncMock()
+        await callback(i1, title="ok")
+
+        # Second call hits rate limit; response.send_message raises.
+        i2 = _make_interaction(user_id=99, guild_id=42)
+        i2.response.send_message = AsyncMock(
+            side_effect=HTTPException(
+                response=MagicMock(status=503, reason="x"),
+                message="boom",
+            )
+        )
+        # Must not propagate.
+        await callback(i2, title="blocked")
+
+        # The exception was swallowed; backend was not called.
+        assert backend.create_issue.await_count == 1
+
+
+class TestEarlyReturnAfterError:
+    async def test_status_handler_returns_early_when_ref_is_none(self) -> None:
+        """If the backend errors out, _safe_invoke returns None and the
+        handler must not produce a success-shaped followup."""
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.update_status = AsyncMock(side_effect=BackendTimeoutError())
+        register_handlers(tree, backend, guild_id=42)
+
+        from discord import Object
+        cmd = tree.get_command("status", guild=Object(id=42))
+        assert cmd is not None
+        choice = MagicMock()
+        choice.value = "in_progress"
+
+        interaction = _make_interaction(guild_id=42)
+        interaction.response.defer = AsyncMock()
+        await cmd.callback(interaction, issue_id="X-1", status=choice)
+
+        # Followup is the timeout reply only — no second success message.
+        assert interaction.followup.send.await_count == 1
+        kwargs = interaction.followup.send.call_args.kwargs
+        assert kwargs.get("ephemeral") is True
+
+    async def test_assign_handler_returns_early_when_ref_is_none(self) -> None:
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.assign_issue = AsyncMock(side_effect=BackendTimeoutError())
+        register_handlers(tree, backend, guild_id=42)
+
+        from discord import Object
+        cmd = tree.get_command("assign", guild=Object(id=42))
+        assert cmd is not None
+
+        interaction = _make_interaction(guild_id=42)
+        interaction.response.defer = AsyncMock()
+        await cmd.callback(interaction, issue_id="X-1", to="bob")
+
+        assert interaction.followup.send.await_count == 1
+        kwargs = interaction.followup.send.call_args.kwargs
+        assert kwargs.get("ephemeral") is True
+
 
 class TestUnexpectedBackendError:
     async def test_unknown_backend_error_maps_to_user_fail(self) -> None:
