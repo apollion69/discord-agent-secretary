@@ -146,12 +146,16 @@ class TestVerifyGuildsSafe:
         client.user = MagicMock(id=42)
         guild = MagicMock(id=1, name="bad")
         member = MagicMock()
-        member.guild_permissions = MagicMock(administrator=True)
-        for attr in (
-            "manage_guild", "manage_roles", "manage_channels",
-            "manage_webhooks", "ban_members", "kick_members", "mention_everyone",
-        ):
-            setattr(member.guild_permissions, attr, False)
+        # Build a bot-specific role (id != guild.id) with administrator=True.
+        # The @everyone role (id == guild.id) is excluded by assert_safe_permissions
+        # so the dangerous perm must come from a bot-specific role to trigger the check.
+        bot_role = MagicMock()
+        bot_role.id = 999  # not guild.id (1)
+        bot_role.permissions = discord.Permissions(administrator=True)
+        everyone_role = MagicMock()
+        everyone_role.id = guild.id  # @everyone — excluded from check
+        everyone_role.permissions = discord.Permissions.none()
+        member.roles = [everyone_role, bot_role]
         guild.get_member.return_value = member
         client.guilds = [guild]
 

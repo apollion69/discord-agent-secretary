@@ -50,8 +50,16 @@ def assert_safe_permissions(guild: discord.Guild, bot_member: discord.Member) ->
 
     Raises `UnsafePermissionsError` if any permission in `REFUSE_PERMS` is granted.
     Called from `on_ready` for each connected guild.
+
+    Checks only the bot's own assigned roles — the @everyone role (which shares
+    the guild ID) is excluded because its permissions are server-wide defaults that
+    apply to all human members too and are not a specific grant to the bot.
     """
-    perms = bot_member.guild_permissions
+    own_roles = [r for r in bot_member.roles if r.id != guild.id]
+    combined = discord.Permissions()
+    for role in own_roles:
+        combined = discord.Permissions(combined.value | role.permissions.value)
+    perms = combined
     violations = sorted(p for p in REFUSE_PERMS if getattr(perms, p, False))
     if violations:
         raise UnsafePermissionsError(
