@@ -143,24 +143,20 @@ async def _safe_invoke(
     replies are ephemeral (visible only to the invoking user) so backend
     health signals don't leak into the public channel.
     """
-    ctx = _ctx_extra(interaction)
+    ctx = {**_ctx_extra(interaction), "action": label}
     try:
         return await coro
     except CircuitOpenError:
-        logger.warning("%s short-circuited (breaker open)", label, extra=ctx)
+        logger.warning("backend short-circuited (breaker open)", extra=ctx)
         await _safe_followup(interaction, _USER_CIRCUIT_OPEN, ephemeral=True)
     except BackendTimeoutError:
-        logger.warning("%s timed out", label, extra=ctx)
+        logger.warning("backend timed out", extra=ctx)
         await _safe_followup(interaction, _USER_TIMEOUT, ephemeral=True)
     except BackendCallError as e:
-        logger.error(
-            "%s backend call error",
-            label,
-            extra={**ctx, "detail": str(e)},
-        )
+        logger.error("backend call error", extra={**ctx, "detail": str(e)})
         await _safe_followup(interaction, _USER_FAIL, ephemeral=True)
     except BackendError:
-        logger.exception("%s unexpected backend error", label, extra=ctx)
+        logger.exception("unexpected backend error", extra=ctx)
         await _safe_followup(interaction, _USER_FAIL, ephemeral=True)
     return None
 

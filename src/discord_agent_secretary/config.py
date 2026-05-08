@@ -8,8 +8,10 @@ Each backend reads its own block of variables — unused blocks may stay empty.
 """
 from __future__ import annotations
 
+import uuid
 from functools import lru_cache
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator
 from pydantic.fields import FieldInfo
@@ -165,8 +167,6 @@ class Settings(BaseSettings):
         """
         if not v:
             return v
-        import uuid
-
         try:
             uuid.UUID(v)
         except ValueError as e:
@@ -182,8 +182,6 @@ class Settings(BaseSettings):
 
         Catches typos at boot rather than at the first deadline parse.
         """
-        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
         try:
             ZoneInfo(v)
         except ZoneInfoNotFoundError as e:

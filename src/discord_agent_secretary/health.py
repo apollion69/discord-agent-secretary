@@ -21,9 +21,13 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class HealthcheckHandle:
-    """Return value from `start_healthcheck` — owns the server + thread."""
+    """Return value from `start_healthcheck` — owns the server + thread.
+
+    Frozen because the fields are wired up at construction and never
+    rebound; `shutdown()` operates on the contained objects only.
+    """
 
     server: socketserver.TCPServer
     thread: threading.Thread

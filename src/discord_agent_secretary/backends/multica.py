@@ -23,7 +23,6 @@ from .base import (
     BackendParseError,
     BackendTimeoutError,
     CircuitBreaker,
-    CircuitOpenError,
     IssueBackendBase,
     IssueRef,
     with_retry,
@@ -142,10 +141,7 @@ class MulticaBackend(IssueBackendBase):
 
     async def _invoke(self, *args: str) -> bytes:
         # Fast-fail without spawning if the breaker is open.
-        try:
-            self._circuit.before_call()
-        except CircuitOpenError:
-            raise
+        self._circuit.before_call()
 
         try:
             stdout = await self._spawn_and_read(*args)

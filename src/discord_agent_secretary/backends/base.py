@@ -24,6 +24,7 @@ Design:
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
@@ -32,6 +33,7 @@ from enum import StrEnum
 from typing import Protocol, TypeVar, runtime_checkable
 
 _T = TypeVar("_T")
+_logger = logging.getLogger(__name__)
 
 
 class BackendError(Exception):
@@ -62,16 +64,18 @@ async def with_retry(
     initial_backoff: float = 0.3,
     backoff_multiplier: float = 2.0,
     max_backoff: float = 2.0,
-    retry_on: tuple[type[BaseException], ...] = (BackendTimeoutError,),
+    retry_on: tuple[type[Exception], ...] = (BackendTimeoutError,),
 ) -> _T:
     """Run an awaitable with bounded retries and exponential backoff.
 
     `coro_factory` is a no-arg callable so each retry gets a fresh coroutine
     (an awaited coroutine cannot be re-awaited). Only the listed exception
-    types trigger a retry; everything else propagates immediately.
+    types trigger a retry; everything else (including `KeyboardInterrupt`
+    and `SystemExit`) propagates immediately. Each intermediate failure
+    is logged at DEBUG so investigators can reconstruct retry sequences.
     """
     delay = initial_backoff
-    last_exc: BaseException | None = None
+    last_exc: Exception | None = None
     for attempt in range(attempts):
         try:
             return await coro_factory()
@@ -79,9 +83,21 @@ async def with_retry(
             last_exc = exc
             if attempt + 1 >= attempts:
                 break
-            await asyncio.sleep(min(delay, max_backoff))
+            sleep_for = min(delay, max_backoff)
+            _logger.debug(
+                "retryable failure — backing off",
+                extra={
+                    "attempt": attempt + 1,
+                    "of": attempts,
+                    "sleep": sleep_for,
+                    "detail": str(exc),
+                    "exc_type": type(exc).__name__,
+                },
+            )
+            await asyncio.sleep(sleep_for)
             delay *= backoff_multiplier
-    assert last_exc is not None
+    if last_exc is None:
+        raise RuntimeError("with_retry exited loop without an exception")
     raise last_exc
 
 
@@ -101,11 +117,16 @@ class CircuitBreaker:
     runs in half-open state — a success closes the circuit, another failure
     re-opens it. Successes inside `CLOSED` reset the failure counter.
 
-    Thread-safety note: `before_call`, `on_success`, and `on_failure` are
-    synchronous and contain no `await` points. Inside the asyncio event loop,
-    coroutine switching only occurs at `await`. These methods therefore run
-    atomically — no threading.Lock is required as long as the breaker is used
-    exclusively from coroutines on a single event loop (the standard case).
+    Concurrency model:
+      * Each method (`before_call`, `on_success`, `on_failure`) runs
+        atomically inside one event loop because none of them `await`.
+      * The wider read-modify-write window — `before_call()` → spawn child →
+        `on_failure()` — DOES straddle awaits. Concurrent in-flight calls
+        can therefore over-trip the breaker by N (one per concurrent call
+        that observed CLOSED before any of them recorded a failure).
+        `failure_threshold` is best understood as a soft target.
+      * Multi-thread use is unsupported. If a future deployment shares a
+        breaker across threads, wrap each method body in a `threading.Lock`.
     """
 
     def __init__(

@@ -10,8 +10,12 @@ import asyncio
 import logging
 import signal
 import sys
+import traceback
+from collections.abc import Callable
+from dataclasses import dataclass
 
 import discord
+from discord import app_commands
 
 from .backends import make_backend
 from .config import get_settings
@@ -21,10 +25,19 @@ from .discord_client import (
     build_client,
 )
 from .handlers import register_handlers
-from .health import start_healthcheck
+from .health import HealthcheckHandle, start_healthcheck
 from .logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
+
+
+_SECRET_FIELDS = (
+    "discord_bot_token",
+    "github_token",
+    "linear_api_key",
+    "jira_api_token",
+    "anthropic_api_key",
+)
 
 
 def _collect_secrets(settings: object) -> list[str]:
@@ -34,26 +47,154 @@ def _collect_secrets(settings: object) -> list[str]:
     minimum length.
     """
     candidates: list[str] = []
-    for attr in (
-        "discord_bot_token",
-        "github_token",
-        "linear_api_key",
-        "jira_api_token",
-        "anthropic_api_key",
-    ):
+    for attr in _SECRET_FIELDS:
         value = getattr(settings, attr, "")
         if isinstance(value, str):
             candidates.append(value)
     return candidates
 
 
+@dataclass
+class _RunState:
+    """Mutable lifecycle flags shared with the on_ready callback.
+
+    `aborted` surfaces a non-zero exit when the bot refuses to run;
+    `synced` keeps tree.sync() from re-firing on every reconnect — Discord
+    rate-limits global sync to 200/day.
+    """
+
+    aborted: bool = False
+    synced: bool = False
+
+
+async def resolve_bot_member(
+    guild: discord.Guild,
+    bot_user_id: int | None,
+) -> discord.Member | None:
+    """Return the bot's own Member in `guild` — cache first, then REST.
+
+    Cache misses fall through to a one-shot `fetch_member`. `None` means
+    membership is unresolvable and the caller should refuse to run rather
+    than operate with unknown authority.
+    """
+    if bot_user_id is None:
+        return None
+    member = guild.get_member(bot_user_id)
+    if member is not None:
+        return member
+    try:
+        return await guild.fetch_member(bot_user_id)
+    except discord.HTTPException as e:
+        logger.warning(
+            "fetch_member failed",
+            extra={"guild_id": guild.id, "detail": str(e)},
+        )
+        return None
+
+
+async def verify_guilds_safe(client: discord.Client) -> bool:
+    """Verify bot permissions in every connected guild.
+
+    Returns False (and logs CRITICAL) on the first unsafe guild or
+    unresolvable membership. Caller must abort if False.
+    """
+    user = client.user
+    bot_user_id = user.id if user else None
+    for guild in client.guilds:
+        bot_member = await resolve_bot_member(guild, bot_user_id)
+        if bot_member is None:
+            logger.critical(
+                "refusing to run: bot membership unresolved",
+                extra={"guild_id": guild.id, "guild_name": guild.name},
+            )
+            return False
+        try:
+            assert_safe_permissions(guild, bot_member)
+        except UnsafePermissionsError as e:
+            logger.critical("refusing to run: %s", e)
+            return False
+    return True
+
+
+async def sync_commands(
+    tree: app_commands.CommandTree,
+    guild_id: int | None,
+) -> int:
+    """Sync slash commands and return the count synced."""
+    if guild_id:
+        guild_obj = discord.Object(id=guild_id)
+        synced = await tree.sync(guild=guild_obj)
+        logger.info(
+            "slash commands synced (guild-scoped)",
+            extra={"guild_id": guild_id, "count": len(synced)},
+        )
+    else:
+        synced = await tree.sync()
+        logger.info("slash commands synced (global)", extra={"count": len(synced)})
+    return len(synced)
+
+
+def install_signal_handlers(
+    loop: asyncio.AbstractEventLoop,
+    callback: Callable[[], None],
+) -> list[signal.Signals]:
+    """Register SIGTERM/SIGINT handlers; return the ones that took.
+
+    Windows / non-main-thread can't add signal handlers via asyncio — we
+    log and let discord.py's own handlers stand in.
+    """
+    registered: list[signal.Signals] = []
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, callback)
+            registered.append(sig)
+        except (NotImplementedError, RuntimeError) as exc:
+            logger.warning(
+                "signal handler not registered — graceful shutdown may not work",
+                extra={"signal": sig.name, "detail": str(exc)},
+            )
+    return registered
+
+
+async def run_client(client: discord.Client, token: str) -> None:
+    """Run the client with graceful-close signal handlers.
+
+    The shutdown task is held in a strong-reference set until done — without
+    it, `loop.create_task(...)` may be GC'd mid-flight on 3.11+ (PEP 3156).
+    """
+    loop = asyncio.get_running_loop()
+    pending: set[asyncio.Task[None]] = set()
+
+    def _request_close() -> None:
+        logger.info("shutdown signal received — closing Discord client")
+        task = loop.create_task(client.close())
+        pending.add(task)
+        task.add_done_callback(pending.discard)
+
+    install_signal_handlers(loop, _request_close)
+
+    async with client:
+        await client.start(token)
+
+
+def _shutdown_healthcheck(handle: HealthcheckHandle | None) -> None:
+    """Close the healthcheck server, swallowing OSError so the main exit
+    code reflects the bot lifecycle, not socket teardown noise."""
+    if handle is None:
+        return
+    try:
+        handle.shutdown()
+    except OSError as exc:
+        logger.warning("health server shutdown raised", extra={"detail": str(exc)})
+
+
 def main() -> int:
     try:
         settings = get_settings()
     except Exception as exc:
-        # Pydantic ValidationError or any unexpected config failure — log to
-        # stderr directly because the logging subsystem isn't set up yet.
-        import sys
+        # Pydantic ValidationError or any unexpected config failure — log
+        # to stderr directly because the logging subsystem isn't set up yet.
+        traceback.print_exc(file=sys.stderr)
         print(f"CRITICAL: configuration failed: {exc}", file=sys.stderr)
         return 1
     configure_logging(
@@ -76,11 +217,7 @@ def main() -> int:
         is_ready=client.is_ready,
     )
 
-    # Mutable state shared with the on_ready closure. `aborted` lets us
-    # surface a non-zero exit when the bot refuses to run; `synced` keeps
-    # tree.sync() from re-firing on every reconnect (Discord rate-limits
-    # global sync to 200/day).
-    state = {"aborted": False, "synced": False}
+    state = _RunState()
 
     @client.event
     async def on_ready() -> None:
@@ -89,86 +226,26 @@ def main() -> int:
             "bot connected",
             extra={"bot_user": str(user), "bot_id": user.id if user else None},
         )
-        for guild in client.guilds:
-            bot_member = guild.get_member(user.id) if user else None
-            if bot_member is None and user is not None:
-                # Cache miss — try a one-shot REST fetch before refusing.
-                try:
-                    bot_member = await guild.fetch_member(user.id)
-                except discord.HTTPException as e:
-                    logger.warning(
-                        "fetch_member failed",
-                        extra={"guild_id": guild.id, "detail": str(e)},
-                    )
-            if bot_member is None:
-                # Refuse to start in any guild where we can't verify perms.
-                # Better a hard abort than running with unknown authority.
-                logger.critical(
-                    "refusing to run: bot membership unresolved",
-                    extra={"guild_id": guild.id, "guild_name": guild.name},
-                )
-                state["aborted"] = True
-                await client.close()
-                return
-            try:
-                assert_safe_permissions(guild, bot_member)
-            except UnsafePermissionsError as e:
-                logger.critical("refusing to run: %s", e)
-                state["aborted"] = True
-                await client.close()
-                return
-        if state["synced"]:
+        if not await verify_guilds_safe(client):
+            state.aborted = True
+            await client.close()
             return
-        if settings.discord_guild_id:
-            guild_obj = discord.Object(id=settings.discord_guild_id)
-            synced = await tree.sync(guild=guild_obj)
-            logger.info(
-                "slash commands synced (guild-scoped)",
-                extra={"guild_id": settings.discord_guild_id, "count": len(synced)},
-            )
-        else:
-            synced = await tree.sync()
-            logger.info("slash commands synced (global)", extra={"count": len(synced)})
-        state["synced"] = True
-
-    async def _runner() -> None:
-        loop = asyncio.get_running_loop()
-
-        def _request_close() -> None:
-            logger.info("shutdown signal received — closing Discord client")
-            loop.create_task(client.close())
-
-        # SIGTERM matters in container/systemd deployments; SIGINT is also
-        # registered so Ctrl+C performs a graceful close instead of leaving
-        # the gateway session lingering on Discord's side.
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            try:
-                loop.add_signal_handler(sig, _request_close)
-            except (NotImplementedError, RuntimeError) as exc:
-                # Windows / non-main-thread — discord.py's own handlers stay.
-                logger.warning(
-                    "signal handler not registered — graceful shutdown may not work",
-                    extra={"signal": sig.name, "detail": str(exc)},
-                )
-
-        async with client:
-            await client.start(settings.discord_bot_token)
+        if state.synced:
+            return
+        await sync_commands(tree, settings.discord_guild_id)
+        state.synced = True
 
     try:
-        asyncio.run(_runner())
+        asyncio.run(run_client(client, settings.discord_bot_token))
     except discord.LoginFailure:
         logger.critical("Discord rejected token — check DISCORD_BOT_TOKEN")
         return 1
     except KeyboardInterrupt:
         return 0
     finally:
-        if health_handle is not None:
-            try:
-                health_handle.shutdown()
-            except Exception as exc:
-                logger.warning("health server shutdown raised", extra={"detail": str(exc)})
+        _shutdown_healthcheck(health_handle)
 
-    return 1 if state["aborted"] else 0
+    return 1 if state.aborted else 0
 
 
 if __name__ == "__main__":
