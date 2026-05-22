@@ -27,6 +27,7 @@ from .discord_client import (
 from .handlers import register_handlers
 from .health import HealthcheckHandle, start_healthcheck
 from .logging_setup import configure_logging
+from .webhook import format_review_message, parse_review_event
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ _SECRET_FIELDS = (
     "linear_api_key",
     "jira_api_token",
     "anthropic_api_key",
+    "multica_webhook_secret",
 )
 
 
@@ -65,6 +67,7 @@ class _RunState:
 
     aborted: bool = False
     synced: bool = False
+    loop: asyncio.AbstractEventLoop | None = None
 
 
 async def resolve_bot_member(
@@ -195,12 +198,52 @@ def _shutdown_healthcheck(handle: HealthcheckHandle | None) -> None:
         logger.warning("health server shutdown raised", extra={"detail": str(exc)})
 
 
+async def _send_review_notification(
+    client: discord.Client, channel_id: int, message: str
+) -> None:
+    channel = client.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await client.fetch_channel(channel_id)
+        except discord.HTTPException as e:
+            logger.warning(
+                "review channel unavailable",
+                extra={"channel_id": channel_id, "detail": str(e)},
+            )
+            return
+    if isinstance(channel, discord.abc.Messageable):
+        await channel.send(message)
+
+
+def _make_webhook_callback(
+    settings: object, client: discord.Client, state: _RunState
+) -> Callable[[bytes, str], None] | None:
+    discord_review_channel_id = getattr(settings, "discord_review_channel_id", None)
+    if not discord_review_channel_id:
+        return None
+    multica_webhook_secret = getattr(settings, "multica_webhook_secret", "")
+    channel_id = discord_review_channel_id
+
+    def _on_webhook(body: bytes, signature: str) -> None:
+        event = parse_review_event(body, signature=signature, secret=multica_webhook_secret)
+        if event is None:
+            return
+        loop = state.loop
+        if loop is None:
+            logger.warning("review notification dropped: event loop not ready")
+            return
+        asyncio.run_coroutine_threadsafe(
+            _send_review_notification(client, channel_id, format_review_message(event)),
+            loop,
+        )
+
+    return _on_webhook
+
+
 def main() -> int:
     try:
         settings = get_settings()
     except Exception as exc:
-        # Pydantic ValidationError or any unexpected config failure — log
-        # to stderr directly because the logging subsystem isn't set up yet.
         traceback.print_exc(file=sys.stderr)
         print(f"CRITICAL: configuration failed: {exc}", file=sys.stderr)
         return 1
@@ -219,12 +262,14 @@ def main() -> int:
     client, tree = build_client()
     register_handlers(tree, backend, settings.discord_guild_id)
 
+    state = _RunState()
+
+    webhook_cb = _make_webhook_callback(settings, client, state)
     health_handle = start_healthcheck(
         settings.healthcheck_port,
         is_ready=client.is_ready,
+        webhook_callback=webhook_cb,
     )
-
-    state = _RunState()
 
     @client.event
     async def on_ready() -> None:
@@ -233,6 +278,7 @@ def main() -> int:
             "bot connected",
             extra={"bot_user": str(user), "bot_id": user.id if user else None},
         )
+        state.loop = asyncio.get_running_loop()
         if not await verify_guilds_safe(client):
             state.aborted = True
             await client.close()

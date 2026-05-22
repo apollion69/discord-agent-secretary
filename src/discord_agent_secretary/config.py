@@ -117,6 +117,17 @@ class Settings(BaseSettings):
         description="TCP port for the /livez and /readyz HTTP endpoints; 0 disables.",
     )
 
+    # === Webhook ===
+    multica_webhook_secret: str = Field(
+        default="",
+        description="HMAC-SHA256 secret for Multica webhook signatures (X-Multica-Signature header); empty = no verification.",
+    )
+    discord_review_channel_id: int | None = Field(
+        default=None,
+        description="Discord channel ID for 'Готово к ревью' notifications.",
+    )
+
+
     # === GitHub backend ===
     github_token: str = Field(default="", description="GitHub PAT or App-installation token")
     github_repo: str = Field(default="", description="owner/repo target")

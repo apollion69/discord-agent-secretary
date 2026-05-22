@@ -17,8 +17,13 @@ import socketserver
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Final
 
 logger = logging.getLogger(__name__)
+
+_WEBHOOK_BODY_LIMIT: Final = 64 * 1024
+
+OnWebhook = Callable[[bytes, str], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +46,9 @@ class HealthcheckHandle:
         self.thread.join(timeout=5.0)
 
 
-def _make_handler(is_ready: Callable[[], bool]) -> type[http.server.BaseHTTPRequestHandler]:
+def _make_handler(
+    is_ready: Callable[[], bool], webhook_callback: OnWebhook | None = None
+) -> type[http.server.BaseHTTPRequestHandler]:
     class _Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 — stdlib API
             if self.path == "/livez":
@@ -55,10 +62,38 @@ def _make_handler(is_ready: Callable[[], bool]) -> type[http.server.BaseHTTPRequ
             else:
                 self._respond(404, "not found\n")
 
+        def do_POST(self) -> None:  # noqa: N802 — stdlib API
+            if self.path != "/hooks/multica":
+                self._respond(404, "not found\n")
+                return
+            if webhook_callback is None:
+                self._respond(404, "not found\n")
+                return
+            content_length_str = self.headers.get("Content-Length")
+            if not content_length_str:
+                self._respond(400, "missing Content-Length\n")
+                return
+            try:
+                content_length = int(content_length_str)
+            except ValueError:
+                self._respond(400, "invalid Content-Length\n")
+                return
+            if content_length > _WEBHOOK_BODY_LIMIT:
+                self._respond(413, "payload too large\n")
+                return
+            try:
+                body = self.rfile.read(content_length)
+                signature = self.headers.get("X-Multica-Signature", "")
+                webhook_callback(body, signature)
+                self._respond(200, "ok\n")
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "webhook handler raised",
+                    extra={"path": self.path, "detail": str(exc)},
+                )
+                self._respond(500, "internal error\n")
+
         def log_message(self, format: str, *args: object) -> None:
-            # Default logger spits to stderr in a non-structured shape; we
-            # silence it and emit one structured line per request through
-            # the project logger instead.
             logger.info(
                 "healthcheck request",
                 extra={
@@ -85,6 +120,7 @@ def start_healthcheck(
     is_ready: Callable[[], bool],
     *,
     bind: str = "0.0.0.0",
+    webhook_callback: OnWebhook | None = None,
 ) -> HealthcheckHandle | None:
     """Start the HTTP probe server in a daemon thread.
 
@@ -94,10 +130,11 @@ def start_healthcheck(
     if port <= 0:
         return None
 
-    handler = _make_handler(is_ready)
+    handler = _make_handler(is_ready, webhook_callback)
     server = socketserver.ThreadingTCPServer((bind, port), handler)
     server.daemon_threads = True
     actual_port = server.server_address[1]
+
     def _serve() -> None:
         try:
             server.serve_forever()
