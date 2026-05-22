@@ -49,10 +49,11 @@ def _strip_preamble(raw: str) -> str:
 
 def _format_message(issue: dict[str, Any], app_url: str) -> str:
     identifier = str(issue.get("identifier") or issue.get("id", "?"))
+    issue_id = str(issue.get("id", ""))
     title = str(issue.get("title") or identifier)
     bell = "\U0001f514"
-    if app_url:
-        url = f"{app_url.rstrip('/')}/venchur/issues/{identifier}"
+    if app_url and issue_id:
+        url = f"{app_url.rstrip('/')}/venchur/issues/{issue_id}"
         return f"{bell} [{identifier}](<{url}>) — «{title}» переведена агентом в review"
     return f"{bell} {identifier} — «{title}» переведена агентом в review"
 
