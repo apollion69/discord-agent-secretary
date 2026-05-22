@@ -371,6 +371,90 @@ class TestStatusAndAssignHappyPaths:
         assert kwargs.get("ephemeral") is True
 
 
+class TestTaskCreatedMessage:
+    """Verify the success message format for /task."""
+
+    async def test_link_when_identifier_and_app_url(self) -> None:
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.create_issue = AsyncMock(
+            return_value=IssueRef(id="uuid-1", title="Fix bug", identifier="VEN-99")
+        )
+        register_handlers(tree, backend, guild_id=42, app_url="http://multica.local:3000")
+
+        from discord import Object
+        cmd = tree.get_command("task", guild=Object(id=42))
+        assert cmd is not None
+
+        interaction = _make_interaction(guild_id=42)
+        interaction.response.defer = AsyncMock()
+        await cmd.callback(interaction, title="Fix bug")
+
+        msg = interaction.followup.send.call_args.args[0]
+        assert "[VEN-99]" in msg
+        assert "http://multica.local:3000/venchur/issues/VEN-99" in msg
+        assert "uuid-1" not in msg
+
+    async def test_fallback_to_identifier_without_app_url(self) -> None:
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.create_issue = AsyncMock(
+            return_value=IssueRef(id="uuid-2", title="t", identifier="VEN-7")
+        )
+        register_handlers(tree, backend, guild_id=42, app_url="")
+
+        from discord import Object
+        cmd = tree.get_command("task", guild=Object(id=42))
+        assert cmd is not None
+
+        interaction = _make_interaction(guild_id=42)
+        interaction.response.defer = AsyncMock()
+        await cmd.callback(interaction, title="t")
+
+        msg = interaction.followup.send.call_args.args[0]
+        assert "VEN-7" in msg
+        assert "uuid-2" not in msg
+
+    async def test_fallback_to_uuid_when_no_identifier(self) -> None:
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.create_issue = AsyncMock(
+            return_value=IssueRef(id="uuid-3", title="t")
+        )
+        register_handlers(tree, backend, guild_id=42, app_url="http://multica.local:3000")
+
+        from discord import Object
+        cmd = tree.get_command("task", guild=Object(id=42))
+        assert cmd is not None
+
+        interaction = _make_interaction(guild_id=42)
+        interaction.response.defer = AsyncMock()
+        await cmd.callback(interaction, title="t")
+
+        msg = interaction.followup.send.call_args.args[0]
+        assert "uuid-3" in msg
+
+    async def test_app_url_trailing_slash_stripped(self) -> None:
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.create_issue = AsyncMock(
+            return_value=IssueRef(id="uuid-4", title="t", identifier="VEN-10")
+        )
+        register_handlers(tree, backend, guild_id=42, app_url="http://multica.local:3000/")
+
+        from discord import Object
+        cmd = tree.get_command("task", guild=Object(id=42))
+        assert cmd is not None
+
+        interaction = _make_interaction(guild_id=42)
+        interaction.response.defer = AsyncMock()
+        await cmd.callback(interaction, title="t")
+
+        msg = interaction.followup.send.call_args.args[0]
+        assert "http://multica.local:3000/venchur/issues/VEN-10" in msg
+        assert "//" not in msg.split("http://", 1)[1]
+
+
 class TestRateLimitInHandler:
     async def test_rate_limit_blocks_backend_call(self) -> None:
         client, tree = build_client()

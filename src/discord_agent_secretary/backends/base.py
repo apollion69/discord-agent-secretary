@@ -180,6 +180,7 @@ class IssueRef:
     id: str
     status: str | None = None
     title: str | None = None
+    identifier: str | None = None
 
 
 @runtime_checkable

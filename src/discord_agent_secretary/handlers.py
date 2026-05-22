@@ -167,6 +167,7 @@ def register_handlers(
     guild_id: int | None,
     *,
     rate_limiter: RateLimiter | None = None,
+    app_url: str = "",
 ) -> None:
     """Attach `/task`, `/status`, `/assign` to `tree`.
 
@@ -177,6 +178,7 @@ def register_handlers(
     """
     guild = discord.Object(id=guild_id) if guild_id else None
     limiter = rate_limiter if rate_limiter is not None else RateLimiter()
+    _app_url = app_url.rstrip("/")
 
     async def _enforce_rate_limit(interaction: discord.Interaction) -> bool:
         key = (
@@ -234,9 +236,15 @@ def register_handlers(
         if ref is None:
             return
         safe_title = discord.utils.escape_markdown(getattr(ref, "title", None) or title)
+        identifier = ref.identifier
+        if identifier and _app_url:
+            issue_url = f"{_app_url}/venchur/issues/{identifier}"
+            ref_text = f"[{identifier}](<{issue_url}>)"
+        else:
+            ref_text = f"`{identifier or ref.id}`"
         await _safe_followup(
             interaction,
-            f"✅ Создана задача **{safe_title}** `{ref.id}`",
+            f"✅ Создана задача **{safe_title}** {ref_text}",
         )
 
     @tree.command(

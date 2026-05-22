@@ -87,6 +87,7 @@ def _to_issue_ref(data: Any) -> IssueRef:
         id=issue_id,
         status=data.get("status") if isinstance(data.get("status"), str) else None,
         title=data.get("title") if isinstance(data.get("title"), str) else None,
+        identifier=data.get("identifier") if isinstance(data.get("identifier"), str) else None,
     )
 
 
