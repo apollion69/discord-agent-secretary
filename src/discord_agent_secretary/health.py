@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 _WEBHOOK_BODY_LIMIT: Final = 64 * 1024
 
 OnWebhook = Callable[[bytes, str], None]
+PollState = Callable[[], "str | None"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,7 +48,9 @@ class HealthcheckHandle:
 
 
 def _make_handler(
-    is_ready: Callable[[], bool], webhook_callback: OnWebhook | None = None
+    is_ready: Callable[[], bool],
+    webhook_callback: OnWebhook | None = None,
+    poll_state: "PollState | None" = None,
 ) -> type[http.server.BaseHTTPRequestHandler]:
     class _Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 — stdlib API
@@ -55,9 +58,11 @@ def _make_handler(
                 self._respond(200, "alive\n")
             elif self.path == "/readyz":
                 ok = bool(is_ready())
+                poll_ts = poll_state() if poll_state is not None else None
+                extra = f"last_poll_ok={poll_ts}\n" if poll_ts else ""
                 self._respond(
                     200 if ok else 503,
-                    "ready\n" if ok else "not ready\n",
+                    ("ready\n" if ok else "not ready\n") + extra,
                 )
             else:
                 self._respond(404, "not found\n")
@@ -121,6 +126,7 @@ def start_healthcheck(
     *,
     bind: str = "0.0.0.0",
     webhook_callback: OnWebhook | None = None,
+    poll_state: "PollState | None" = None,
 ) -> HealthcheckHandle | None:
     """Start the HTTP probe server in a daemon thread.
 
@@ -130,7 +136,7 @@ def start_healthcheck(
     if port <= 0:
         return None
 
-    handler = _make_handler(is_ready, webhook_callback)
+    handler = _make_handler(is_ready, webhook_callback, poll_state)
     server = socketserver.ThreadingTCPServer((bind, port), handler)
     server.daemon_threads = True
     actual_port = server.server_address[1]

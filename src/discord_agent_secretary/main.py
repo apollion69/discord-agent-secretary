@@ -13,6 +13,7 @@ import sys
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 import discord
 from discord import app_commands
@@ -27,6 +28,7 @@ from .discord_client import (
 from .handlers import register_handlers
 from .health import HealthcheckHandle, start_healthcheck
 from .logging_setup import configure_logging
+from .pull_worker import ReviewPollWorker
 from .webhook import format_review_message, parse_review_event
 
 logger = logging.getLogger(__name__)
@@ -68,6 +70,8 @@ class _RunState:
     aborted: bool = False
     synced: bool = False
     loop: asyncio.AbstractEventLoop | None = None
+    poll_worker: ReviewPollWorker | None = None
+    poll_task: asyncio.Task[None] | None = None
 
 
 async def resolve_bot_member(
@@ -265,10 +269,32 @@ def main() -> int:
     state = _RunState()
 
     webhook_cb = _make_webhook_callback(settings, client, state)
+
+    poll_worker: ReviewPollWorker | None = None
+    if settings.discord_review_channel_id:
+        poll_worker = ReviewPollWorker(
+            cli_path=settings.multica_cli_path or "multica",
+            channel_id=settings.discord_review_channel_id,
+            seen_path=Path(settings.multica_seen_path),
+            poll_interval=settings.multica_poll_interval,
+            app_url=settings.multica_app_url,
+            cli_timeout=max(settings.multica_cli_timeout, 30.0),
+        )
+        state.poll_worker = poll_worker
+        logger.info(
+            "review pull poller configured",
+            extra={
+                "channel_id": settings.discord_review_channel_id,
+                "interval": settings.multica_poll_interval,
+                "seen_path": settings.multica_seen_path,
+            },
+        )
+
     health_handle = start_healthcheck(
         settings.healthcheck_port,
         is_ready=client.is_ready,
         webhook_callback=webhook_cb,
+        poll_state=(lambda: poll_worker.last_poll_ok) if poll_worker else None,
     )
 
     @client.event
@@ -287,6 +313,11 @@ def main() -> int:
             return
         await sync_commands(tree, settings.discord_guild_id)
         state.synced = True
+        if poll_worker is not None and state.poll_task is None:
+            state.poll_task = asyncio.create_task(
+                poll_worker.run(client),
+                name="review-poll-worker",
+            )
 
     try:
         asyncio.run(run_client(client, settings.discord_bot_token))

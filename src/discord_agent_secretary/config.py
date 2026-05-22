@@ -127,6 +127,22 @@ class Settings(BaseSettings):
         description="Discord channel ID for 'Готово к ревью' notifications.",
     )
 
+    # === Pull poller ===
+    multica_poll_interval: float = Field(
+        default=30.0,
+        ge=5.0,
+        le=3600.0,
+        description="Seconds between in_review poll cycles (default 30).",
+    )
+    multica_seen_path: str = Field(
+        default="/opt/discord-secretary/seen.json",
+        description="Path to the dedup state file for the pull poller.",
+    )
+    multica_app_url: str = Field(
+        default="",
+        description="Base URL of the Multica web UI for issue links in Discord messages (e.g. http://ansible-lx1.mgmt.local:3000).",
+    )
+
 
     # === GitHub backend ===
     github_token: str = Field(default="", description="GitHub PAT or App-installation token")
