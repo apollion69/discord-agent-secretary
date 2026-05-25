@@ -13,7 +13,7 @@ from functools import lru_cache
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 from pydantic_settings.sources import DotEnvSettingsSource, EnvSettingsSource
@@ -267,6 +267,20 @@ class Settings(BaseSettings):
         except ZoneInfoNotFoundError as e:
             raise ValueError(f"tz {v!r} is not a known IANA zone") from e
         return v
+
+    @model_validator(mode="after")
+    def _validate_review_routing_signature_secret(self) -> Settings:
+        if (
+            self.discord_review_channel_id is not None
+            and self.multica_review_routing_mode != "off"
+            and not self.multica_review_dry_run
+            and not self.multica_webhook_secret.strip()
+        ):
+            raise ValueError(
+                "MULTICA_WEBHOOK_SECRET is required when automated review routing "
+                "can mutate Multica from review webhooks"
+            )
+        return self
 
 
 @lru_cache(maxsize=1)

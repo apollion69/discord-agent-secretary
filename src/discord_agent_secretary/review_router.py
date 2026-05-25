@@ -26,6 +26,8 @@ def _text(value: object) -> str | None:
 
 
 class ReviewBackend(Protocol):
+    async def list_comments(self, issue_id: str) -> list[dict[str, object]]: ...
+
     async def add_subscriber(self, issue_id: str, reviewer_ref: str) -> None: ...
 
     async def add_comment(self, issue_id: str, content: str) -> None: ...
@@ -42,6 +44,56 @@ class ReviewRouteResult:
     reviewer_ref: str | None = None
 
 
+def _comment_content(comment: dict[str, object] | Any) -> str:
+    if not isinstance(comment, dict):
+        return ""
+    return _text(comment.get("content")) or ""
+
+
+def parse_routing_record_comment(comment: dict[str, object]) -> dict[str, object] | None:
+    content = _comment_content(comment)
+    if not content.startswith(ROUTING_COMMENT_PREFIX):
+        return None
+    payload = content[len(ROUTING_COMMENT_PREFIX) :].strip()
+    try:
+        parsed: Any = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    record = {str(key): value for key, value in parsed.items() if isinstance(key, str)}
+    issue_id = _text(record.get("issue_id"))
+    reviewer_ref = _text(record.get("reviewer_ref"))
+    if issue_id is None or reviewer_ref is None:
+        return None
+    return record
+
+
+def _strip_preamble(raw: str) -> str:
+    lines = raw.splitlines()
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith(("{", "[")):
+            return "\n".join(lines[index:])
+    return raw
+
+
+def parse_comment_list_json(data: Any) -> list[dict[str, object]]:
+    if isinstance(data, dict):
+        raw_comments = data.get("comments")
+    elif isinstance(data, list):
+        raw_comments = data
+    else:
+        raise RuntimeError("unexpected multica comment-list JSON shape")
+    if not isinstance(raw_comments, list):
+        raise RuntimeError("unexpected multica comment-list comments shape")
+    comments: list[dict[str, object]] = []
+    for item in raw_comments:
+        if not isinstance(item, dict):
+            raise RuntimeError("unexpected multica comment-list item shape")
+        comments.append({str(key): value for key, value in item.items() if isinstance(key, str)})
+    return comments
+
+
 class CliReviewBackend:
     """Multica CLI-backed review backend.
 
@@ -53,29 +105,45 @@ class CliReviewBackend:
         self._cli_path = cli_path
         self._timeout = timeout
 
-    async def _run(self, *args: str) -> None:
+    async def _run(self, *args: str, stdin_text: str | None = None) -> tuple[bytes, bytes]:
         proc = await asyncio.create_subprocess_exec(
             self._cli_path,
             *args,
+            stdin=asyncio.subprocess.PIPE if stdin_text is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         assert proc.stdout is not None and proc.stderr is not None
+        input_bytes = stdin_text.encode("utf-8") if stdin_text is not None else None
         try:
-            stdout, stderr = await asyncio.wait_for(
-                asyncio.gather(proc.stdout.read(), proc.stderr.read()),
-                timeout=self._timeout,
-            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(input_bytes), timeout=self._timeout)
         except TimeoutError:
             proc.kill()
             await proc.wait()
             raise
-        if proc.returncode is None:
-            await proc.wait()
         if proc.returncode != 0:
             detail = stderr.decode("utf-8", errors="replace").strip()[:500]
             output = stdout.decode("utf-8", errors="replace").strip()[:200]
             raise RuntimeError(f"multica exit {proc.returncode}: {detail or output}")
+        return stdout, stderr
+
+    async def _run_json(self, *args: str, stdin_text: str | None = None) -> Any:
+        stdout, _stderr = await self._run(*args, stdin_text=stdin_text)
+        text = _strip_preamble(stdout.decode("utf-8", errors="replace")).strip()
+        if not text:
+            return None
+        return json.loads(text)
+
+    async def list_comments(self, issue_id: str) -> list[dict[str, object]]:
+        data = await self._run_json(
+            "issue",
+            "comment",
+            "list",
+            issue_id,
+            "--output",
+            "json",
+        )
+        return parse_comment_list_json(data)
 
     async def add_subscriber(self, issue_id: str, reviewer_ref: str) -> None:
         await self._run(
@@ -95,10 +163,10 @@ class CliReviewBackend:
             "comment",
             "add",
             issue_id,
-            "--content",
-            content,
+            "--content-stdin",
             "--output",
             "json",
+            stdin_text=content,
         )
 
     async def assign_issue(self, issue_id: str, assignee_ref: str) -> None:
@@ -166,6 +234,28 @@ class AutomatedReviewRouter:
         )
         tmp.replace(self._state_path)
 
+    async def _hydrate_route_from_comments(
+        self,
+        issue_id: str,
+        state: dict[str, Any],
+    ) -> dict[str, object] | None:
+        comments = await self._backend.list_comments(issue_id)
+        for comment in comments:
+            record = parse_routing_record_comment(comment)
+            if record is None or _text(record.get("issue_id")) != issue_id:
+                continue
+            state["issues"][issue_id] = record
+            self._save_state(state)
+            logger.info(
+                "automated review routing state hydrated",
+                extra={
+                    "issue_id": issue_id,
+                    "reviewer_ref": _text(record.get("reviewer_ref")),
+                },
+            )
+            return record
+        return None
+
     def _select_reviewer(self) -> str | None:
         if not self._reviewer_refs:
             return None
@@ -202,6 +292,13 @@ class AutomatedReviewRouter:
                 issue_id=issue_id,
                 outcome="already_routed",
                 reviewer_ref=str(issues[issue_id].get("reviewer_ref") or reviewer_ref),
+            )
+        hydrated = await self._hydrate_route_from_comments(issue_id, state)
+        if hydrated is not None:
+            return ReviewRouteResult(
+                issue_id=issue_id,
+                outcome="already_routed",
+                reviewer_ref=_text(hydrated.get("reviewer_ref")) or reviewer_ref,
             )
 
         producer_agent_id = None
@@ -242,13 +339,15 @@ class AutomatedReviewRouter:
         self._save_state(state)
         return ReviewRouteResult(issue_id=issue_id, outcome="routed", reviewer_ref=reviewer_ref)
 
-    def _validate_verdict_owner(
+    async def _validate_verdict_owner(
         self,
         issue_id: str,
         reviewer_ref: str,
     ) -> tuple[str | None, dict[str, object] | None]:
         state = self.load_state()
         issue_record = state["issues"].get(issue_id)
+        if not isinstance(issue_record, dict):
+            issue_record = await self._hydrate_route_from_comments(issue_id, state)
         if not isinstance(issue_record, dict):
             logger.warning(
                 "automated review verdict rejected",
@@ -281,7 +380,7 @@ class AutomatedReviewRouter:
         comment: str,
     ) -> ReviewRouteResult:
         content = comment.strip() or "approved"
-        rejection, _issue_record = self._validate_verdict_owner(issue_id, reviewer_ref)
+        rejection, _issue_record = await self._validate_verdict_owner(issue_id, reviewer_ref)
         if rejection is not None:
             return ReviewRouteResult(issue_id=issue_id, outcome=rejection, reviewer_ref=reviewer_ref)
         if self._dry_run:
@@ -321,7 +420,7 @@ class AutomatedReviewRouter:
                 reviewer_ref=reviewer_ref,
             )
 
-        rejection, issue_record = self._validate_verdict_owner(issue_id, reviewer_ref)
+        rejection, issue_record = await self._validate_verdict_owner(issue_id, reviewer_ref)
         if rejection is not None:
             return ReviewRouteResult(issue_id=issue_id, outcome=rejection, reviewer_ref=reviewer_ref)
         assert issue_record is not None

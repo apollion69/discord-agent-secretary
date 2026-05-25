@@ -63,6 +63,7 @@ Issues   = "https://github.com/apollion69/discord-agent-secretary/issues"
 [project.scripts]
 discord-agent-secretary = "discord_agent_secretary.main:main"
 discord-agent-secretary-stale-review = "discord_agent_secretary.stale_scanner:main"
+discord-agent-secretary-review = "discord_agent_secretary.review_verdict:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

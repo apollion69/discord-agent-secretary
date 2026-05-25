@@ -167,6 +167,20 @@ class TestSettingsValidation:
         with pytest.raises(ValidationError):
             Settings(_env_file=None)
 
+    def test_mutating_review_webhook_routing_requires_secret(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("DISCORD_REVIEW_CHANNEL_ID", "123")
+        monkeypatch.setenv("MULTICA_REVIEW_ROUTING_MODE", "subscribe")
+        monkeypatch.setenv("MULTICA_REVIEW_DRY_RUN", "false")
+        with pytest.raises(ValidationError, match="MULTICA_WEBHOOK_SECRET"):
+            Settings(_env_file=None)
+
+    def test_dry_run_review_webhook_routing_allows_missing_secret(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("DISCORD_REVIEW_CHANNEL_ID", "123")
+        monkeypatch.setenv("MULTICA_REVIEW_ROUTING_MODE", "subscribe")
+        monkeypatch.setenv("MULTICA_REVIEW_DRY_RUN", "true")
+        s = Settings(_env_file=None)
+        assert s.multica_review_dry_run is True
+
 
 class TestSettingsMemoization:
     def test_get_settings_is_memoized(self, clean_settings):

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 from .config import get_settings
-from .review_router import ROUTING_COMMENT_PREFIX, VERDICT_COMMENT_PREFIX
+from .review_router import parse_comment_list_json, parse_routing_record_comment
 from .stale_review import StaleScanCounts, classify_stale_in_review, format_stale_summary
 
 HUMAN_AUTHOR_TYPES = frozenset({"member", "user", "human"})
@@ -114,23 +114,10 @@ def _has_human_comment(comments: list[dict[str, object]]) -> bool:
     return any(_comment_author_type(comment) in HUMAN_AUTHOR_TYPES for comment in comments)
 
 
-def _has_verdict_comment(comments: list[dict[str, object]]) -> bool:
-    return any(_comment_content(comment).startswith(VERDICT_COMMENT_PREFIX) for comment in comments)
-
-
 def _parse_routing_record(comment: Mapping[str, object]) -> dict[str, object] | None:
-    content = _comment_content(comment)
-    if not content.startswith(ROUTING_COMMENT_PREFIX):
+    if not isinstance(comment, dict):
         return None
-    payload = content[len(ROUTING_COMMENT_PREFIX) :].strip()
-    try:
-        parsed: Any = json.loads(payload)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(parsed, dict):
-        return None
-    record = {str(key): value for key, value in parsed.items() if isinstance(key, str)}
-    return record if _text(record.get("issue_id")) else None
+    return parse_routing_record_comment(comment)
 
 
 def _load_state_routes(state_path: Path | None) -> dict[str, dict[str, object]]:
@@ -177,7 +164,6 @@ def _enrich_issue(
     enriched = dict(issue)
     enriched["age_days"] = _age_days(issue, now)
     enriched["human_comment_exists"] = _has_human_comment(comments)
-    enriched["review_verdict_exists"] = _has_verdict_comment(comments)
     if route is not None:
         if _text(enriched.get("origin_type")) is None:
             enriched["origin_type"] = _text(route.get("origin_type")) or "autopilot"
@@ -248,8 +234,6 @@ class StaleReviewScanner:
             route = routes.get(issue_id)
             enriched = _enrich_issue(issue, route=route, comments=comments, now=self._now)
 
-            if enriched.get("review_verdict_exists") is True:
-                continue
             decision = classify_stale_in_review(
                 enriched,
                 routed_state=routes,
@@ -307,12 +291,12 @@ class StaleReviewScanner:
 
 
 class CliStaleReviewBackend:
-    def __init__(self, *, cli_path: str, timeout: float = 30.0, comment_recent: int = 200) -> None:
+    def __init__(self, *, cli_path: str, timeout: float = 30.0, comment_recent: int = 0) -> None:
         self._cli_path = cli_path
         self._timeout = timeout
         self._comment_recent = comment_recent
 
-    async def _run_json(self, *args: str, stdin_text: str | None = None) -> Any:
+    async def _run_bytes(self, *args: str, stdin_text: str | None = None) -> tuple[bytes, bytes]:
         proc = await asyncio.create_subprocess_exec(
             self._cli_path,
             *args,
@@ -332,6 +316,10 @@ class CliStaleReviewBackend:
             detail = stderr.decode("utf-8", errors="replace").strip()[:500]
             output = stdout.decode("utf-8", errors="replace").strip()[:200]
             raise RuntimeError(f"multica exit {proc.returncode}: {detail or output}")
+        return stdout, stderr
+
+    async def _run_json(self, *args: str, stdin_text: str | None = None) -> Any:
+        stdout, _stderr = await self._run_bytes(*args, stdin_text=stdin_text)
         text = _strip_preamble(stdout.decode("utf-8", errors="replace")).strip()
         if not text:
             return None
@@ -365,24 +353,22 @@ class CliStaleReviewBackend:
         return cast(list[dict[str, object]], issues), has_more
 
     async def list_comments(self, issue_id: str) -> list[dict[str, object]]:
-        data: Any = await self._run_json(
+        args = [
             "issue",
             "comment",
             "list",
             issue_id,
             "--output",
             "json",
-            "--recent",
-            str(self._comment_recent),
-        )
-        if isinstance(data, dict):
-            raw_comments = data.get("comments", [])
-        elif isinstance(data, list):
-            raw_comments = data
-        else:
-            raw_comments = []
-        comments = [dict(item) for item in raw_comments if isinstance(item, dict)]
-        return cast(list[dict[str, object]], comments)
+        ]
+        if self._comment_recent > 0:
+            args.extend(["--recent", str(self._comment_recent)])
+        stdout, stderr = await self._run_bytes(*args)
+        if b"Next thread cursor:" in stderr:
+            raise RuntimeError("comment history is truncated; refusing stale-review mutation")
+        text = _strip_preamble(stdout.decode("utf-8", errors="replace")).strip()
+        data = json.loads(text) if text else None
+        return parse_comment_list_json(data)
 
     async def add_comment(self, issue_id: str, content: str) -> None:
         await self._run_json(
@@ -418,7 +404,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tracking-issue", default=os.getenv("MULTICA_STALE_REVIEW_TRACKING_ISSUE"))
     parser.add_argument("--threshold-days", type=int, default=7)
     parser.add_argument("--page-limit", type=int, default=100)
-    parser.add_argument("--comment-recent", type=int, default=200)
+    parser.add_argument("--comment-recent", type=int, default=0)
     parser.add_argument("--state-path")
     parser.add_argument("--cli-path")
     parser.add_argument("--week-of")

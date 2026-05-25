@@ -13,10 +13,14 @@ pytestmark = pytest.mark.unit
 
 @dataclass
 class FakeReviewBackend:
+    listed_comments: dict[str, list[dict[str, object]]] = field(default_factory=dict)
     subscribers: list[tuple[str, str]] = field(default_factory=list)
     comments: list[tuple[str, str]] = field(default_factory=list)
     assignments: list[tuple[str, str]] = field(default_factory=list)
     statuses: list[tuple[str, str]] = field(default_factory=list)
+
+    async def list_comments(self, issue_id: str) -> list[dict[str, object]]:
+        return self.listed_comments.get(issue_id, [])
 
     async def add_subscriber(self, issue_id: str, reviewer_ref: str) -> None:
         self.subscribers.append((issue_id, reviewer_ref))
@@ -96,6 +100,33 @@ async def test_route_issue_is_idempotent_and_preserves_producer(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_route_issue_hydrates_existing_routing_comment_after_state_loss(tmp_path) -> None:
+    comment = {
+        "content": (
+            '[automated-review-routing] {"issue_id": "issue-1", '
+            '"reviewer_ref": "checker-agent", "producer_agent_id": "producer-agent"}'
+        )
+    }
+    backend = FakeReviewBackend(listed_comments={"issue-1": [comment]})
+    router = AutomatedReviewRouter(
+        reviewer_refs=["checker-agent"],
+        routing_mode="subscribe",
+        rework_status="todo",
+        dry_run=False,
+        state_path=tmp_path / "routing.json",
+        backend=backend,
+    )
+
+    result = await router.route_issue(automated_issue())
+
+    assert result.outcome == "already_routed"
+    assert result.reviewer_ref == "checker-agent"
+    assert backend.subscribers == []
+    assert backend.comments == []
+    assert router.load_state()["issues"]["issue-1"]["producer_agent_id"] == "producer-agent"
+
+
+@pytest.mark.asyncio
 async def test_corrupt_routing_state_fails_closed(tmp_path) -> None:
     backend = FakeReviewBackend()
     state_path = tmp_path / "routing.json"
@@ -157,6 +188,31 @@ async def test_approve_verdict_rejects_unrouted_issue(tmp_path) -> None:
     assert result.outcome == "verdict_rejected_unrouted"
     assert backend.statuses == []
     assert backend.comments == []
+
+
+@pytest.mark.asyncio
+async def test_approve_verdict_hydrates_routing_comment_after_state_loss(tmp_path) -> None:
+    comment = {
+        "content": (
+            '[automated-review-routing] {"issue_id": "issue-1", '
+            '"reviewer_ref": "checker-agent", "producer_agent_id": "producer-agent"}'
+        )
+    }
+    backend = FakeReviewBackend(listed_comments={"issue-1": [comment]})
+    router = AutomatedReviewRouter(
+        reviewer_refs=["checker-agent"],
+        routing_mode="subscribe",
+        rework_status="todo",
+        dry_run=False,
+        state_path=tmp_path / "routing.json",
+        backend=backend,
+    )
+
+    result = await router.approve("issue-1", reviewer_ref="checker-agent", comment="Looks good")
+
+    assert result.outcome == "approved"
+    assert backend.statuses == [("issue-1", "done")]
+    assert router.load_state()["issues"]["issue-1"]["reviewer_ref"] == "checker-agent"
 
 
 @pytest.mark.asyncio
