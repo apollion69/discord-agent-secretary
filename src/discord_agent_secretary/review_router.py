@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +24,14 @@ def _text(value: object) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def _is_uuid_ref(value: str) -> bool:
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
 
 
 class ReviewBackend(Protocol):
@@ -146,12 +155,13 @@ class CliReviewBackend:
         return parse_comment_list_json(data)
 
     async def add_subscriber(self, issue_id: str, reviewer_ref: str) -> None:
+        ref_flag = "--user-id" if _is_uuid_ref(reviewer_ref) else "--user"
         await self._run(
             "issue",
             "subscriber",
             "add",
             issue_id,
-            "--user",
+            ref_flag,
             reviewer_ref,
             "--output",
             "json",
@@ -170,11 +180,12 @@ class CliReviewBackend:
         )
 
     async def assign_issue(self, issue_id: str, assignee_ref: str) -> None:
+        ref_flag = "--to-id" if _is_uuid_ref(assignee_ref) else "--to"
         await self._run(
             "issue",
             "assign",
             issue_id,
-            "--to",
+            ref_flag,
             assignee_ref,
             "--output",
             "json",

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from discord_agent_secretary.review_router import AutomatedReviewRouter
+from discord_agent_secretary.review_router import AutomatedReviewRouter, CliReviewBackend
 
 pytestmark = pytest.mark.unit
 
@@ -281,3 +281,56 @@ async def test_rework_verdict_moves_to_rework_status_and_reassigns_producer(tmp_
         "issue-1",
         "[automated-review-verdict] reviewer=checker-agent action=rework: Needs the evidence link fixed",
     )
+
+
+@pytest.mark.asyncio
+async def test_cli_backend_assigns_uuid_refs_by_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = CliReviewBackend("multica")
+    calls: list[tuple[str, ...]] = []
+
+    async def _fake_run(*args: str, stdin_text: str | None = None) -> tuple[bytes, bytes]:
+        calls.append(args)
+        return b"{}", b""
+
+    monkeypatch.setattr(backend, "_run", _fake_run)
+
+    await backend.assign_issue("issue-1", "d28180c2-6f1c-4214-9ca1-140bd14f36db")
+
+    assert calls == [
+        (
+            "issue",
+            "assign",
+            "issue-1",
+            "--to-id",
+            "d28180c2-6f1c-4214-9ca1-140bd14f36db",
+            "--output",
+            "json",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cli_backend_subscribes_named_refs_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = CliReviewBackend("multica")
+    calls: list[tuple[str, ...]] = []
+
+    async def _fake_run(*args: str, stdin_text: str | None = None) -> tuple[bytes, bytes]:
+        calls.append(args)
+        return b"{}", b""
+
+    monkeypatch.setattr(backend, "_run", _fake_run)
+
+    await backend.add_subscriber("issue-1", "Codex-worker")
+
+    assert calls == [
+        (
+            "issue",
+            "subscriber",
+            "add",
+            "issue-1",
+            "--user",
+            "Codex-worker",
+            "--output",
+            "json",
+        )
+    ]
