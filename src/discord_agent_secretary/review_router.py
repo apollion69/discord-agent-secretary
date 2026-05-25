@@ -14,6 +14,8 @@ from .review_routing import classify_review_candidate
 logger = logging.getLogger(__name__)
 
 RoutingMode = Literal["off", "subscribe", "assign"]
+ROUTING_COMMENT_PREFIX = "[automated-review-routing] "
+VERDICT_COMMENT_PREFIX = "[automated-review-verdict]"
 
 
 def _text(value: object) -> str | None:
@@ -221,7 +223,7 @@ class AutomatedReviewRouter:
             ],
             "routed_at": datetime.now(UTC).isoformat(),
         }
-        comment = "[automated-review-routing] " + json.dumps(
+        comment = ROUTING_COMMENT_PREFIX + json.dumps(
             record,
             ensure_ascii=False,
             sort_keys=True,
@@ -291,7 +293,7 @@ class AutomatedReviewRouter:
 
         await self._backend.add_comment(
             issue_id,
-            f"[automated-review-verdict] reviewer={reviewer_ref} action=approve: {content}",
+            f"{VERDICT_COMMENT_PREFIX} reviewer={reviewer_ref} action=approve: {content}",
         )
         await self._backend.update_status(issue_id, "done")
         return ReviewRouteResult(issue_id=issue_id, outcome="approved", reviewer_ref=reviewer_ref)
@@ -338,7 +340,7 @@ class AutomatedReviewRouter:
 
         await self._backend.add_comment(
             issue_id,
-            f"[automated-review-verdict] reviewer={reviewer_ref} action=rework: {content}",
+            f"{VERDICT_COMMENT_PREFIX} reviewer={reviewer_ref} action=rework: {content}",
         )
         await self._backend.update_status(issue_id, self._rework_status)
         if isinstance(producer_agent_id, str) and producer_agent_id:
