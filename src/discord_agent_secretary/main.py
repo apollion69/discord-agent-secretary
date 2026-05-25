@@ -12,6 +12,7 @@ import signal
 import sys
 import traceback
 from collections.abc import Callable
+from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -226,6 +227,52 @@ async def _send_review_notification(
         await channel.send(message)
 
 
+def _log_background_failure(
+    future: Future[None],
+    *,
+    action: str,
+    issue_id: str,
+    identifier: str,
+    origin_type: str | None = None,
+    origin_id: str | None = None,
+    origin_source: str | None = None,
+    routing_outcome: str | None = None,
+) -> None:
+    try:
+        future.result()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "%s failed",
+            action,
+            extra={
+                "issue_id": issue_id,
+                "identifier": identifier,
+                "origin_type": origin_type,
+                "origin_id": origin_id,
+                "origin_source": origin_source,
+                "routing_outcome": routing_outcome,
+                "detail": str(exc),
+            },
+        )
+
+
+def _review_log_extra(
+    event: ReviewEvent,
+    *,
+    routing_outcome: str | None = None,
+    reviewer_ref: str | None = None,
+) -> dict[str, object]:
+    return {
+        "issue_id": event.issue_id,
+        "identifier": event.identifier,
+        "origin_type": event.origin_type,
+        "origin_id": event.origin_id,
+        "origin_source": event.origin_source,
+        "routing_outcome": routing_outcome,
+        "reviewer_ref": reviewer_ref,
+    }
+
+
 def _issue_from_review_event(event: ReviewEvent) -> dict[str, object]:
     return {
         "id": event.issue_id,
@@ -255,41 +302,63 @@ def _make_webhook_callback(
             return
         loop = state.loop
         if not should_notify_discord_for_review(event):
-            logger.info(
-                "review notification suppressed",
-                extra={
-                    "issue_id": event.issue_id,
-                    "identifier": event.identifier,
-                    "origin_type": event.origin_type,
-                    "origin_source": event.origin_source,
-                },
-            )
             router = state.review_router
+            if router is None:
+                logger.info(
+                    "review notification suppressed",
+                    extra=_review_log_extra(event, routing_outcome="routing_unconfigured"),
+                )
+                return
             if router is not None:
                 if loop is None:
-                    logger.warning("review routing dropped: event loop not ready")
+                    logger.warning(
+                        "review routing dropped: event loop not ready",
+                        extra=_review_log_extra(event, routing_outcome="loop_unavailable"),
+                    )
                     return
 
                 async def _route_review() -> None:
                     result = await router.route_issue(_issue_from_review_event(event))
                     logger.info(
-                        "review routing outcome",
-                        extra={
-                            "issue_id": event.issue_id,
-                            "identifier": event.identifier,
-                            "outcome": result.outcome,
-                            "reviewer_ref": result.reviewer_ref,
-                        },
+                        "review notification suppressed",
+                        extra=_review_log_extra(
+                            event,
+                            routing_outcome=result.outcome,
+                            reviewer_ref=result.reviewer_ref,
+                        ),
                     )
 
-                asyncio.run_coroutine_threadsafe(_route_review(), loop)
+                future = asyncio.run_coroutine_threadsafe(_route_review(), loop)
+                future.add_done_callback(
+                    lambda f: _log_background_failure(
+                        f,
+                        action="review routing",
+                        issue_id=event.issue_id,
+                        identifier=event.identifier,
+                        origin_type=event.origin_type,
+                        origin_id=event.origin_id,
+                        origin_source=event.origin_source,
+                        routing_outcome="routing_failed",
+                    )
+                )
             return
         if loop is None:
             logger.warning("review notification dropped: event loop not ready")
             return
-        asyncio.run_coroutine_threadsafe(
+        future = asyncio.run_coroutine_threadsafe(
             _send_review_notification(client, channel_id, format_review_message(event)),
             loop,
+        )
+        future.add_done_callback(
+            lambda f: _log_background_failure(
+                f,
+                action="review notification",
+                issue_id=event.issue_id,
+                identifier=event.identifier,
+                origin_type=event.origin_type,
+                origin_id=event.origin_id,
+                origin_source=event.origin_source,
+            )
         )
 
     return _on_webhook

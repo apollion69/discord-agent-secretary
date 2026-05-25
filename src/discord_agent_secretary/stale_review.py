@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 
+from .review_routing import AUTOMATED_AUTOPILOT_SOURCES
+
 
 @dataclass(frozen=True)
 class StaleReviewDecision:
@@ -48,9 +50,10 @@ def classify_stale_in_review(
 
     issue_id = _text(issue.get("id")) or ""
     origin_type = _text(issue.get("origin_type"))
+    origin_source = (_text(issue.get("origin_source")) or "").lower()
     creator_type = _text(issue.get("creator_type"))
 
-    if origin_type == "autopilot":
+    if origin_type == "autopilot" and origin_source in AUTOMATED_AUTOPILOT_SOURCES:
         route = routed_state.get(issue_id)
         if route is not None:
             reviewer_ref = _text(route.get("reviewer_ref")) or "configured reviewer"
@@ -63,6 +66,13 @@ def classify_stale_in_review(
             action="routing_blocker",
             status_target=None,
             comment="Automated review routing blocker: reviewer routing was not recorded.",
+        )
+
+    if origin_type == "autopilot":
+        return StaleReviewDecision(
+            action="human_escalate",
+            status_target=None,
+            comment="Stale operator-triggered autopilot review - @e.romanov: please review or close.",
         )
 
     if creator_type == "member":

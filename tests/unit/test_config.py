@@ -55,6 +55,17 @@ class TestSettingsFromEnv:
         s = Settings(_env_file=None)
         assert s.multica_automated_reviewers == ["alice", "checker-agent"]
 
+    def test_automated_reviewers_parsed_from_dotenv_csv(self, tmp_path, clean_settings):
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "MULTICA_AUTOMATED_REVIEWERS=alice, checker-agent\n",
+            encoding="utf-8",
+        )
+
+        s = Settings(_env_file=env_file)
+
+        assert s.multica_automated_reviewers == ["alice", "checker-agent"]
+
     def test_discord_guild_id_coerced_to_int(self, monkeypatch, clean_settings):
         monkeypatch.setenv("DISCORD_GUILD_ID", "999888777")
         s = Settings(_env_file=None)

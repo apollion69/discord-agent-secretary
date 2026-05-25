@@ -52,7 +52,10 @@ def verify_signature(body: bytes, signature: str, secret: str) -> bool:
 def parse_review_event(
     body: bytes, *, signature: str = "", secret: str = ""
 ) -> ReviewEvent | None:
-    if secret and signature:
+    if secret:
+        if not signature:
+            logger.warning("multica webhook: missing signature — dropping")
+            return None
         if not verify_signature(body, signature, secret):
             logger.warning("multica webhook: signature mismatch — dropping")
             return None

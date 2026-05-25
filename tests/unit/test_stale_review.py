@@ -47,6 +47,16 @@ def test_stale_automated_issue_without_routing_gets_blocker() -> None:
     assert "routing blocker" in decision.comment.lower()
 
 
+def test_stale_manual_autopilot_issue_is_not_treated_as_automated_routing() -> None:
+    decision = classify_stale_in_review(
+        base_issue(origin_source="manual"),
+        routed_state={},
+    )
+
+    assert decision.action == "human_escalate"
+    assert decision.status_target is None
+
+
 def test_stale_human_investigation_is_escalated_without_status_change() -> None:
     decision = classify_stale_in_review(
         base_issue(creator_type="member", origin_type=None, origin_source=None),

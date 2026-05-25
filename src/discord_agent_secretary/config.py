@@ -16,19 +16,20 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import Field, field_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
-from pydantic_settings.sources import EnvSettingsSource
+from pydantic_settings.sources import DotEnvSettingsSource, EnvSettingsSource
+
+_CSV_FIELDS = {"discord_watch_channels", "multica_automated_reviewers"}
 
 
 class _CsvFriendlyEnvSource(EnvSettingsSource):
     """EnvSettingsSource that skips JSON pre-decode for CSV-shaped env vars.
 
     `pydantic-settings` 2.1 eagerly `json.loads()` any env value whose target
-    field is "complex" (list/dict/etc). Our `discord_watch_channels` is a CSV,
+    field is "complex" (list/dict/etc). Our list settings are CSV-shaped,
     which would trip that. Passing the raw string through lets the
-    `@field_validator(mode="before")` split it.
+    `@field_validator(mode="before")` split it. Dotenv uses the same override
+    below because it has the same complex-value pre-decode behavior.
     """
-
-    _CSV_FIELDS = {"discord_watch_channels", "multica_automated_reviewers"}
 
     def prepare_field_value(
         self,
@@ -37,7 +38,20 @@ class _CsvFriendlyEnvSource(EnvSettingsSource):
         value: Any,
         value_is_complex: bool,
     ) -> Any:
-        if field_name in self._CSV_FIELDS:
+        if field_name in _CSV_FIELDS:
+            return value
+        return super().prepare_field_value(field_name, field, value, value_is_complex)
+
+
+class _CsvFriendlyDotEnvSource(DotEnvSettingsSource):
+    def prepare_field_value(
+        self,
+        field_name: str,
+        field: FieldInfo,
+        value: Any,
+        value_is_complex: bool,
+    ) -> Any:
+        if field_name in _CSV_FIELDS:
             return value
         return super().prepare_field_value(field_name, field, value, value_is_complex)
 
@@ -66,7 +80,18 @@ class Settings(BaseSettings):
         return (
             init_settings,
             _CsvFriendlyEnvSource(settings_cls),
-            dotenv_settings,
+            _CsvFriendlyDotEnvSource(
+                settings_cls,
+                env_file=getattr(dotenv_settings, "env_file", None),
+                env_file_encoding=getattr(dotenv_settings, "env_file_encoding", None),
+                case_sensitive=getattr(dotenv_settings, "case_sensitive", None),
+                env_prefix=getattr(dotenv_settings, "env_prefix", None),
+                env_nested_delimiter=getattr(dotenv_settings, "env_nested_delimiter", None),
+                env_nested_max_split=getattr(dotenv_settings, "env_nested_max_split", None),
+                env_ignore_empty=getattr(dotenv_settings, "env_ignore_empty", None),
+                env_parse_none_str=getattr(dotenv_settings, "env_parse_none_str", None),
+                env_parse_enums=getattr(dotenv_settings, "env_parse_enums", None),
+            ),
             file_secret_settings,
         )
 

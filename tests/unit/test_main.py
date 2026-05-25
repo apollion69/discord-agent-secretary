@@ -12,8 +12,10 @@ The bot's network path can't run in CI, so these tests cover:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import signal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
@@ -22,6 +24,8 @@ import pytest
 from discord_agent_secretary.discord_client import UnsafePermissionsError
 from discord_agent_secretary.main import (
     _collect_secrets,
+    _make_webhook_callback,
+    _RunState,
     _shutdown_healthcheck,
     install_signal_handlers,
     main,
@@ -31,6 +35,23 @@ from discord_agent_secretary.main import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+def _automated_webhook_body() -> bytes:
+    return json.dumps(
+        {
+            "new_status": "in_review",
+            "actor_type": "agent",
+            "issue": {
+                "id": "issue-1",
+                "identifier": "VEN-1",
+                "title": "Scheduled task",
+                "origin_type": "autopilot",
+                "origin_id": "autopilot-1",
+                "origin_source": "schedule",
+            },
+        }
+    ).encode()
 
 
 class TestCollectSecrets:
@@ -253,6 +274,64 @@ class TestShutdownHealthcheck:
         handle.shutdown.side_effect = RuntimeError("bug")
         with pytest.raises(RuntimeError):
             _shutdown_healthcheck(handle)
+
+
+class TestWebhookCallback:
+    async def test_suppressed_automated_review_log_includes_routing_outcome(
+        self,
+        caplog,
+    ) -> None:
+        class _Router:
+            async def route_issue(self, issue):
+                return SimpleNamespace(outcome="routed", reviewer_ref="checker-agent")
+
+        state = _RunState(
+            loop=asyncio.get_running_loop(),
+            review_router=_Router(),  # type: ignore[arg-type]
+        )
+        settings = SimpleNamespace(discord_review_channel_id=123, multica_webhook_secret="")
+        callback = _make_webhook_callback(settings, MagicMock(), state)
+        assert callback is not None
+
+        with caplog.at_level(logging.INFO):
+            callback(_automated_webhook_body(), "")
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        records = [
+            r for r in caplog.records if r.getMessage() == "review notification suppressed"
+        ]
+        assert records
+        assert records[-1].origin_id == "autopilot-1"  # type: ignore[attr-defined]
+        assert records[-1].routing_outcome == "routed"  # type: ignore[attr-defined]
+        assert records[-1].reviewer_ref == "checker-agent"  # type: ignore[attr-defined]
+
+    async def test_suppressed_automated_review_logs_routing_failure(
+        self,
+        caplog,
+    ) -> None:
+        class _Router:
+            async def route_issue(self, issue):
+                raise RuntimeError("route failed")
+
+        state = _RunState(
+            loop=asyncio.get_running_loop(),
+            review_router=_Router(),  # type: ignore[arg-type]
+        )
+        settings = SimpleNamespace(discord_review_channel_id=123, multica_webhook_secret="")
+        callback = _make_webhook_callback(settings, MagicMock(), state)
+        assert callback is not None
+
+        with caplog.at_level(logging.WARNING):
+            callback(_automated_webhook_body(), "")
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0.01)
+
+        records = [r for r in caplog.records if r.getMessage() == "review routing failed"]
+        assert records
+        assert records[-1].origin_id == "autopilot-1"  # type: ignore[attr-defined]
+        assert records[-1].routing_outcome == "routing_failed"  # type: ignore[attr-defined]
 
 
 def _make_runner_stub(*, raise_exc: BaseException | None = None):

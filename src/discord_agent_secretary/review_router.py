@@ -16,6 +16,13 @@ logger = logging.getLogger(__name__)
 RoutingMode = Literal["off", "subscribe", "assign"]
 
 
+def _text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
 class ReviewBackend(Protocol):
     async def add_subscriber(self, issue_id: str, reviewer_ref: str) -> None: ...
 
@@ -59,6 +66,7 @@ class CliReviewBackend:
             )
         except TimeoutError:
             proc.kill()
+            await proc.wait()
             raise
         if proc.returncode is None:
             await proc.wait()
@@ -134,8 +142,14 @@ class AutomatedReviewRouter:
     def load_state(self) -> dict[str, Any]:
         try:
             data = json.loads(self._state_path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
+        except FileNotFoundError:
             data = {}
+        except json.JSONDecodeError:
+            logger.error(
+                "automated review routing state is corrupt",
+                extra={"state_path": str(self._state_path)},
+            )
+            raise
         issues = data.get("issues")
         if not isinstance(issues, dict):
             data["issues"] = {}
@@ -201,6 +215,10 @@ class AutomatedReviewRouter:
             "producer_agent_id": producer_agent_id,
             "reviewer_ref": reviewer_ref,
             "routing_mode": self._routing_mode,
+            "expected_verdicts": [
+                "approve_to_done",
+                f"request_rework_to_{self._rework_status}",
+            ],
             "routed_at": datetime.now(UTC).isoformat(),
         }
         comment = "[automated-review-routing] " + json.dumps(
@@ -222,6 +240,37 @@ class AutomatedReviewRouter:
         self._save_state(state)
         return ReviewRouteResult(issue_id=issue_id, outcome="routed", reviewer_ref=reviewer_ref)
 
+    def _validate_verdict_owner(
+        self,
+        issue_id: str,
+        reviewer_ref: str,
+    ) -> tuple[str | None, dict[str, object] | None]:
+        state = self.load_state()
+        issue_record = state["issues"].get(issue_id)
+        if not isinstance(issue_record, dict):
+            logger.warning(
+                "automated review verdict rejected",
+                extra={
+                    "issue_id": issue_id,
+                    "reviewer_ref": reviewer_ref,
+                    "reason": "unrouted_issue",
+                },
+            )
+            return "verdict_rejected_unrouted", None
+        recorded_reviewer = _text(issue_record.get("reviewer_ref"))
+        if recorded_reviewer != reviewer_ref:
+            logger.warning(
+                "automated review verdict rejected",
+                extra={
+                    "issue_id": issue_id,
+                    "reviewer_ref": reviewer_ref,
+                    "recorded_reviewer_ref": recorded_reviewer,
+                    "reason": "wrong_reviewer",
+                },
+            )
+            return "verdict_rejected_reviewer", None
+        return None, cast(dict[str, object], issue_record)
+
     async def approve(
         self,
         issue_id: str,
@@ -230,6 +279,9 @@ class AutomatedReviewRouter:
         comment: str,
     ) -> ReviewRouteResult:
         content = comment.strip() or "approved"
+        rejection, _issue_record = self._validate_verdict_owner(issue_id, reviewer_ref)
+        if rejection is not None:
+            return ReviewRouteResult(issue_id=issue_id, outcome=rejection, reviewer_ref=reviewer_ref)
         if self._dry_run:
             logger.info(
                 "automated review approve dry-run",
@@ -239,7 +291,7 @@ class AutomatedReviewRouter:
 
         await self._backend.add_comment(
             issue_id,
-            f"[automated-review-verdict] approve: {content}",
+            f"[automated-review-verdict] reviewer={reviewer_ref} action=approve: {content}",
         )
         await self._backend.update_status(issue_id, "done")
         return ReviewRouteResult(issue_id=issue_id, outcome="approved", reviewer_ref=reviewer_ref)
@@ -267,8 +319,10 @@ class AutomatedReviewRouter:
                 reviewer_ref=reviewer_ref,
             )
 
-        state = self.load_state()
-        issue_record = state["issues"].get(issue_id, {})
+        rejection, issue_record = self._validate_verdict_owner(issue_id, reviewer_ref)
+        if rejection is not None:
+            return ReviewRouteResult(issue_id=issue_id, outcome=rejection, reviewer_ref=reviewer_ref)
+        assert issue_record is not None
         producer_agent_id = issue_record.get("producer_agent_id")
 
         if self._dry_run:
@@ -284,7 +338,7 @@ class AutomatedReviewRouter:
 
         await self._backend.add_comment(
             issue_id,
-            f"[automated-review-verdict] rework: {content}",
+            f"[automated-review-verdict] reviewer={reviewer_ref} action=rework: {content}",
         )
         await self._backend.update_status(issue_id, self._rework_status)
         if isinstance(producer_agent_id, str) and producer_agent_id:

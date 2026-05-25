@@ -213,6 +213,16 @@ class TestParseReviewEvent:
         result = parse_review_event(body, signature=wrong_sig, secret=secret)
         assert result is None
 
+    def test_missing_signature_with_configured_secret_returns_none(self) -> None:
+        payload = {
+            "new_status": "in_review",
+            "actor_type": "agent",
+            "issue": {"id": "issue-1", "identifier": "VEN-123", "title": "Test"},
+        }
+        body = json.dumps(payload).encode()
+        result = parse_review_event(body, signature="", secret="correct_secret")
+        assert result is None
+
     def test_signature_match_parses(self) -> None:
         secret = "correct_secret"
         payload = {
