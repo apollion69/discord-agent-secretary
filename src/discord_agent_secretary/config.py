@@ -28,7 +28,7 @@ class _CsvFriendlyEnvSource(EnvSettingsSource):
     `@field_validator(mode="before")` split it.
     """
 
-    _CSV_FIELDS = {"discord_watch_channels"}
+    _CSV_FIELDS = {"discord_watch_channels", "multica_automated_reviewers"}
 
     def prepare_field_value(
         self,
@@ -43,6 +43,7 @@ class _CsvFriendlyEnvSource(EnvSettingsSource):
 
 
 BackendName = Literal["multica", "github", "linear", "jira"]
+ReviewRoutingMode = Literal["off", "subscribe", "assign"]
 
 
 class Settings(BaseSettings):
@@ -143,6 +144,28 @@ class Settings(BaseSettings):
         description="Base URL of the Multica web UI for issue links in Discord messages (e.g. http://ansible-lx1.mgmt.local:3000).",
     )
 
+    # === Automated review routing ===
+    multica_automated_reviewers: list[str] = Field(
+        default_factory=list,
+        description="CSV list of reviewer actor refs/names used for automated task review routing.",
+    )
+    multica_review_routing_mode: ReviewRoutingMode = Field(
+        default="off",
+        description="Automated review routing mode: off, subscribe, or assign.",
+    )
+    multica_review_dry_run: bool = Field(
+        default=True,
+        description="When true, report reviewer routing actions without mutating Multica.",
+    )
+    multica_rework_status: str = Field(
+        default="todo",
+        description="Existing Multica status used when a reviewer requests rework.",
+    )
+    multica_review_state_path: str = Field(
+        default="/opt/discord-secretary/review-routing.json",
+        description="Idempotent state file for automated review routing and verdicts.",
+    )
+
 
     # === GitHub backend ===
     github_token: str = Field(default="", description="GitHub PAT or App-installation token")
@@ -167,10 +190,10 @@ class Settings(BaseSettings):
     log_format: Literal["json", "console"] = "json"
     tz: str = Field(default="Europe/Moscow", description="IANA timezone for deadline parsing")
 
-    @field_validator("discord_watch_channels", mode="before")
+    @field_validator("discord_watch_channels", "multica_automated_reviewers", mode="before")
     @classmethod
-    def _split_channel_list(cls, v: object) -> object:
-        """Accept int, str, or list — coerce to list[int].
+    def _split_csv_list(cls, v: object) -> object:
+        """Accept int, str, or list — coerce comma-separated env strings.
 
         pydantic-settings can hand this field a bare `int` when the env value
         parses as a JSON number. A CSV string like `"123,456"` comes in as
@@ -181,8 +204,13 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             if not v.strip():
                 return []
-            return [int(x.strip()) for x in v.split(",") if x.strip()]
+            return [x.strip() for x in v.split(",") if x.strip()]
         return v
+
+    @field_validator("discord_watch_channels")
+    @classmethod
+    def _coerce_channel_ids(cls, v: list[object]) -> list[int]:
+        return [int(str(x)) for x in v]
 
     @field_validator("multica_workspace_id")
     @classmethod

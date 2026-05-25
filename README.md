@@ -98,6 +98,29 @@ MULTICA_WORKSPACE_ID=your-uuid   # from `multica workspace list`
 Install the Multica CLI from [github.com/multica-ai/multica/releases](https://github.com/multica-ai/multica/releases)
 or via Homebrew: `brew install multica-ai/tap/multica`.
 
+#### Automated review routing
+
+Automated Multica issues are classified by explicit origin metadata. Issues with
+`origin_type=autopilot` and `origin_source=schedule|webhook|api` are suppressed
+from the corporate Discord review channel and can be routed to configured
+reviewers instead.
+
+```dotenv
+DISCORD_REVIEW_CHANNEL_ID=1234567890
+MULTICA_REVIEW_ROUTING_MODE=off          # off | subscribe | assign
+MULTICA_REVIEW_DRY_RUN=true              # rollback switch: true disables Multica mutations
+MULTICA_AUTOMATED_REVIEWERS=checker-agent
+MULTICA_REWORK_STATUS=todo
+MULTICA_REVIEW_STATE_PATH=/opt/discord-secretary/review-routing.json
+```
+
+Deploy with `MULTICA_REVIEW_DRY_RUN=true` first. Evidence commands:
+
+```bash
+multica issue list --status in_review --output json
+pytest tests/unit/test_review_routing.py tests/unit/test_review_router.py tests/unit/test_stale_review.py -q
+```
+
 #### GitHub Issues backend (stub — contribute!)
 
 ```dotenv

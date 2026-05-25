@@ -50,6 +50,11 @@ class TestSettingsFromEnv:
         s = Settings(_env_file=None)
         assert s.discord_watch_channels == []
 
+    def test_automated_reviewers_parsed_from_csv(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("MULTICA_AUTOMATED_REVIEWERS", "alice, checker-agent")
+        s = Settings(_env_file=None)
+        assert s.multica_automated_reviewers == ["alice", "checker-agent"]
+
     def test_discord_guild_id_coerced_to_int(self, monkeypatch, clean_settings):
         monkeypatch.setenv("DISCORD_GUILD_ID", "999888777")
         s = Settings(_env_file=None)
@@ -137,6 +142,19 @@ class TestSettingsValidation:
     def test_healthcheck_port_default_disabled(self, clean_settings):
         s = Settings(_env_file=None)
         assert s.healthcheck_port == 0
+
+    def test_review_routing_defaults_are_dry_run(self, clean_settings):
+        s = Settings(_env_file=None)
+        assert s.multica_automated_reviewers == []
+        assert s.multica_review_routing_mode == "off"
+        assert s.multica_review_dry_run is True
+        assert s.multica_rework_status == "todo"
+        assert s.multica_review_state_path == "/opt/discord-secretary/review-routing.json"
+
+    def test_invalid_review_routing_mode_rejected(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("MULTICA_REVIEW_ROUTING_MODE", "invalid")
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None)
 
 
 class TestSettingsMemoization:

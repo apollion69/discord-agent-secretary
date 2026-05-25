@@ -14,11 +14,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import discord
+
+from .review_router import AutomatedReviewRouter
+from .review_routing import classify_review_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +61,24 @@ def _format_message(issue: dict[str, Any], app_url: str) -> str:
     return f"{bell} {identifier} — «{title}» переведена агентом в review"
 
 
+def _split_fresh_reviews(
+    issues: list[dict[str, Any]], seen: set[str]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    notifiable: list[dict[str, Any]] = []
+    suppressed_automated: list[dict[str, Any]] = []
+    for issue in issues:
+        raw_issue_id = issue.get("id")
+        if not isinstance(raw_issue_id, str) or raw_issue_id in seen:
+            continue
+
+        decision = classify_review_candidate(issue)
+        if decision.notify_discord:
+            notifiable.append(issue)
+        elif decision.is_automated_autopilot:
+            suppressed_automated.append(issue)
+    return notifiable, suppressed_automated
+
+
 async def _send_to_channel(client: discord.Client, channel_id: int, message: str) -> None:
     channel = client.get_channel(channel_id)
     if channel is None:
@@ -84,6 +105,7 @@ class ReviewPollWorker:
         seen_path: Path,
         poll_interval: float,
         app_url: str,
+        review_router: AutomatedReviewRouter | None = None,
         cli_timeout: float = 30.0,
     ) -> None:
         self._cli_path = cli_path
@@ -91,6 +113,7 @@ class ReviewPollWorker:
         self._seen_path = seen_path
         self._poll_interval = poll_interval
         self._app_url = app_url
+        self._review_router = review_router
         self._cli_timeout = cli_timeout
         self._last_poll_ok: str | None = None
 
@@ -159,17 +182,39 @@ class ReviewPollWorker:
                         extra={"seeded": len(seen)},
                     )
                 else:
-                    fresh = [
-                        i
-                        for i in issues
-                        if i.get("id") not in seen
-                        and i.get("assignee_type") == "agent"
-                    ]
-                    for issue in fresh:
+                    notifiable, suppressed_automated = _split_fresh_reviews(issues, seen)
+                    seen_changed = False
+                    for issue in suppressed_automated:
+                        issue_id = str(issue["id"])
+                        seen.add(issue_id)
+                        seen_changed = True
+                        logger.info(
+                            "review_poll_worker: suppressed automated review",
+                            extra={
+                                "identifier": issue.get("identifier"),
+                                "issue_id": issue_id,
+                                "origin_type": issue.get("origin_type"),
+                                "origin_source": issue.get("origin_source"),
+                            },
+                        )
+                        if self._review_router is not None:
+                            result = await self._review_router.route_issue(issue)
+                            logger.info(
+                                "review_poll_worker: routing outcome",
+                                extra={
+                                    "identifier": issue.get("identifier"),
+                                    "issue_id": issue_id,
+                                    "outcome": result.outcome,
+                                    "reviewer_ref": result.reviewer_ref,
+                                },
+                            )
+
+                    for issue in notifiable:
                         issue_id = str(issue["id"])
                         msg = _format_message(issue, self._app_url)
                         await _send_to_channel(client, self._channel_id, msg)
                         seen.add(issue_id)
+                        seen_changed = True
                         logger.info(
                             "review_poll_worker: notified",
                             extra={
@@ -177,10 +222,10 @@ class ReviewPollWorker:
                                 "issue_id": issue_id,
                             },
                         )
-                    if fresh:
+                    if seen_changed:
                         _save_seen(self._seen_path, seen)
 
-                self._last_poll_ok = datetime.now(timezone.utc).isoformat()
+                self._last_poll_ok = datetime.now(UTC).isoformat()
 
             except asyncio.CancelledError:
                 logger.info("review_poll_worker: cancelled")
