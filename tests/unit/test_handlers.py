@@ -553,3 +553,27 @@ class TestActAsMember:
 
         assert backend.create_issue.call_args.kwargs["on_behalf_of"] is None
         assert not any("no Multica member mapping" in r.message for r in caplog.records)
+
+    async def test_no_invoker_id_does_not_warn(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # A map is configured but the interaction carried no user — we must NOT
+        # emit the "no mapping for Discord user" warning (the wording misleads).
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.create_issue = AsyncMock(return_value=IssueRef(id="uuid-4", title="t"))
+        register_handlers(tree, backend, guild_id=42, member_map={"7": "member-uuid-7"})
+
+        from discord import Object
+
+        cmd = tree.get_command("task", guild=Object(id=42))
+        assert cmd is not None
+
+        interaction = _make_interaction(user_id=7, guild_id=42)
+        interaction.user = None  # no invoker on the interaction
+        interaction.response.defer = AsyncMock()
+        with caplog.at_level("WARNING"):
+            await cmd.callback(interaction, title="t")
+
+        assert backend.create_issue.call_args.kwargs["on_behalf_of"] is None
+        assert not any("no Multica member mapping" in r.message for r in caplog.records)

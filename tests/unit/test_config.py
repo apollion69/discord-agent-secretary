@@ -155,3 +155,21 @@ class TestSettingsMemoization:
         s2 = get_settings()
         assert s2.log_level == "ERROR"
         assert s1 is not s2
+
+
+class TestMemberMapValidation:
+    """DISCORD_MEMBER_MAP UUID values are validated at load (fail-fast)."""
+
+    def test_valid_uuids_accepted(self, clean_settings):
+        s = Settings(
+            _env_file=None,
+            discord_member_map={"219764926061871104": "aebb6b6f-d07d-4ea0-9cfe-3576987ccfbe"},
+        )
+        assert s.discord_member_map["219764926061871104"].startswith("aebb6b6f")
+
+    def test_invalid_uuid_rejected(self, clean_settings):
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, discord_member_map={"123": "not-a-uuid"})
+
+    def test_empty_map_is_default(self, clean_settings):
+        assert Settings(_env_file=None).discord_member_map == {}

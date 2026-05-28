@@ -206,6 +206,19 @@ class MulticaBackend(IssueBackendBase):
             )
         return stdout
 
+    def _parse_ref(self, raw: bytes) -> IssueRef:
+        """Parse a CLI JSON response into an IssueRef.
+
+        A malformed CLI response counts as a circuit-breaker failure: a
+        persistently broken CLI path would otherwise drain calls indefinitely
+        without ever opening the breaker (the spawn itself "succeeded").
+        """
+        try:
+            return _to_issue_ref(_parse_json_output(raw))
+        except MulticaParseError:
+            self._circuit.on_failure()
+            raise
+
     async def create_issue(
         self,
         title: str,
@@ -224,23 +237,20 @@ class MulticaBackend(IssueBackendBase):
             args += ["--priority", priority]
         if assignee:
             args += ["--assignee", assignee]
-        # Act-as-member: attribute the issue to the real requester. The CLI reads
-        # MULTICA_ON_BEHALF_OF and sends it as X-On-Behalf-Of; the server honors
-        # it only for a privileged token and a valid workspace member, so an
-        # invalid value safely falls back to the token owner. Only override the
-        # environment when set, so unrelated calls inherit the parent env as-is.
+        # Act-as-member: forward MULTICA_ON_BEHALF_OF only when set, so other
+        # calls inherit the parent env unchanged (env=None means "inherit").
         env: dict[str, str] | None = None
         if on_behalf_of:
             env = {**os.environ, "MULTICA_ON_BEHALF_OF": on_behalf_of}
         raw = await self._invoke(*args, env=env)
-        return _to_issue_ref(_parse_json_output(raw))
+        return self._parse_ref(raw)
 
     async def get_issue(self, issue_id: str) -> IssueRef:
         raw = await with_retry(
             lambda: self._invoke("issue", "get", issue_id, "--output", "json"),
             retry_on=(BackendTimeoutError,),
         )
-        return _to_issue_ref(_parse_json_output(raw))
+        return self._parse_ref(raw)
 
     async def assign_issue(self, issue_id: str, to: str) -> IssueRef:
         raw = await with_retry(
@@ -249,7 +259,7 @@ class MulticaBackend(IssueBackendBase):
             ),
             retry_on=(BackendTimeoutError,),
         )
-        return _to_issue_ref(_parse_json_output(raw))
+        return self._parse_ref(raw)
 
     async def update_status(self, issue_id: str, status: str) -> IssueRef:
         raw = await with_retry(
@@ -258,4 +268,4 @@ class MulticaBackend(IssueBackendBase):
             ),
             retry_on=(BackendTimeoutError,),
         )
-        return _to_issue_ref(_parse_json_output(raw))
+        return self._parse_ref(raw)

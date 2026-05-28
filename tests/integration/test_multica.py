@@ -391,3 +391,15 @@ class TestActAsMemberEnv:
             await backend.create_issue("T")
         # No override → env stays None so the child inherits the parent env.
         assert sink["env"] is None
+
+
+class TestParseErrorTripsBreaker:
+    """A malformed CLI response counts toward the circuit breaker."""
+
+    async def test_parse_error_opens_circuit(self):
+        proc = _FakeProc(stdout=b"not-json-at-all")
+        backend = MulticaBackend(cli_path="multica", circuit_failure_threshold=1)
+        with _patch_spawn(proc):
+            with pytest.raises(MulticaParseError):
+                await backend.create_issue("X")
+        assert backend.circuit.state == CircuitState.OPEN

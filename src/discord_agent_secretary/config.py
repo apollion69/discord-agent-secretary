@@ -175,6 +175,24 @@ class Settings(BaseSettings):
     log_format: Literal["json", "console"] = "json"
     tz: str = Field(default="Europe/Moscow", description="IANA timezone for deadline parsing")
 
+    @field_validator("discord_member_map")
+    @classmethod
+    def _validate_member_map(cls, v: dict[str, str]) -> dict[str, str]:
+        """Fail fast at startup if any mapped value is not a valid UUID.
+
+        Without this, a typo'd member UUID is silently rejected by the server
+        and the issue is attributed to the token owner with no observable error
+        (only a per-call warning) — exactly the bug this feature fixes.
+        """
+        for discord_id, member_uuid in v.items():
+            try:
+                uuid.UUID(member_uuid)
+            except (ValueError, AttributeError, TypeError) as e:
+                raise ValueError(
+                    f"discord_member_map[{discord_id!r}] is not a valid UUID: {member_uuid!r}"
+                ) from e
+        return v
+
     @field_validator("discord_watch_channels", mode="before")
     @classmethod
     def _split_channel_list(cls, v: object) -> object:

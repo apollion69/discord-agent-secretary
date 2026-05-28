@@ -229,7 +229,9 @@ def register_handlers(
         # back to the bot's token owner so task creation never fails on a gap.
         invoker_id = getattr(getattr(interaction, "user", None), "id", None)
         on_behalf_of = _member_map.get(str(invoker_id)) if invoker_id is not None else None
-        if _member_map and on_behalf_of is None:
+        # Only warn when we actually have an invoker that isn't mapped — not when
+        # the interaction carried no user at all (the wording would mislead).
+        if _member_map and invoker_id is not None and on_behalf_of is None:
             logger.warning(
                 "no Multica member mapping for Discord user; "
                 "task will be attributed to the token owner",
