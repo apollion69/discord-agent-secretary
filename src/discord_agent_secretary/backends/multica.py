@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any, Final
 
 from .base import (
@@ -140,12 +141,12 @@ class MulticaBackend(IssueBackendBase):
     def circuit(self) -> CircuitBreaker:
         return self._circuit
 
-    async def _invoke(self, *args: str) -> bytes:
+    async def _invoke(self, *args: str, env: dict[str, str] | None = None) -> bytes:
         # Fast-fail without spawning if the breaker is open.
         self._circuit.before_call()
 
         try:
-            stdout = await self._spawn_and_read(*args)
+            stdout = await self._spawn_and_read(*args, env=env)
         except (BackendTimeoutError, BackendCallError):
             self._circuit.on_failure()
             raise
@@ -155,12 +156,13 @@ class MulticaBackend(IssueBackendBase):
         self._circuit.on_success()
         return stdout
 
-    async def _spawn_and_read(self, *args: str) -> bytes:
+    async def _spawn_and_read(self, *args: str, env: dict[str, str] | None = None) -> bytes:
         proc = await asyncio.create_subprocess_exec(
             self._cli_path,
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         # `proc.stdout` / `proc.stderr` are guaranteed non-None when both
         # are PIPE'd, but mypy can't narrow that — assert for clarity.
@@ -211,6 +213,7 @@ class MulticaBackend(IssueBackendBase):
         description: str | None = None,
         priority: str | None = None,
         assignee: str | None = None,
+        on_behalf_of: str | None = None,
     ) -> IssueRef:
         # NOT retried: a partial first attempt may have created an issue —
         # retrying would risk duplicates. The circuit breaker still applies.
@@ -221,7 +224,15 @@ class MulticaBackend(IssueBackendBase):
             args += ["--priority", priority]
         if assignee:
             args += ["--assignee", assignee]
-        raw = await self._invoke(*args)
+        # Act-as-member: attribute the issue to the real requester. The CLI reads
+        # MULTICA_ON_BEHALF_OF and sends it as X-On-Behalf-Of; the server honors
+        # it only for a privileged token and a valid workspace member, so an
+        # invalid value safely falls back to the token owner. Only override the
+        # environment when set, so unrelated calls inherit the parent env as-is.
+        env: dict[str, str] | None = None
+        if on_behalf_of:
+            env = {**os.environ, "MULTICA_ON_BEHALF_OF": on_behalf_of}
+        raw = await self._invoke(*args, env=env)
         return _to_issue_ref(_parse_json_output(raw))
 
     async def get_issue(self, issue_id: str) -> IssueRef:

@@ -86,6 +86,14 @@ class Settings(BaseSettings):
         description="Target Multica workspace UUID (required when BACKEND=multica)",
     )
     multica_default_assignee: str = Field(default="", description="Default assignee ID/name")
+    discord_member_map: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Maps a Discord user ID (string) to a Multica member user UUID so /task "
+            "is attributed to the real requester via act-as-member. JSON object, e.g. "
+            '{"123456789":"<uuid>"}. Unmapped users fall back to the bot token owner.'
+        ),
+    )
     multica_cli_path: str = Field(default="", description="Absolute path to multica CLI; empty = autodetect")
     multica_cli_timeout: float = Field(default=8.0, ge=0.5, le=60.0)
     multica_cli_output_byte_limit: int = Field(

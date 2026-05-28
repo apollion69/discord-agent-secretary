@@ -356,3 +356,38 @@ class TestRetryAndCircuitBreaker:
                 await backend.create_issue("Y")
         # No new subprocess spawned after the circuit opened.
         assert spawn_count == spawn_count_after_open
+
+
+class TestActAsMemberEnv:
+    """create_issue propagates on_behalf_of to the CLI subprocess environment."""
+
+    @staticmethod
+    def _capture_env(proc: _FakeProc, sink: dict[str, Any]):
+        async def _fake(*_args: Any, **kwargs: Any) -> _FakeProc:
+            sink["env"] = kwargs.get("env")
+            return proc
+
+        return patch(
+            "discord_agent_secretary.backends.multica.asyncio.create_subprocess_exec",
+            side_effect=_fake,
+        )
+
+    async def test_on_behalf_of_sets_env(self):
+        proc = _FakeProc(stdout=b'{"id":"VEN-1"}')
+        sink: dict[str, Any] = {}
+        with self._capture_env(proc, sink):
+            backend = MulticaBackend(cli_path="multica")
+            await backend.create_issue("T", on_behalf_of="member-uuid-7")
+        assert sink["env"] is not None
+        assert sink["env"]["MULTICA_ON_BEHALF_OF"] == "member-uuid-7"
+        # Parent environment is preserved, not replaced.
+        assert "PATH" in sink["env"]
+
+    async def test_without_on_behalf_of_env_is_none(self):
+        proc = _FakeProc(stdout=b'{"id":"VEN-2"}')
+        sink: dict[str, Any] = {}
+        with self._capture_env(proc, sink):
+            backend = MulticaBackend(cli_path="multica")
+            await backend.create_issue("T")
+        # No override → env stays None so the child inherits the parent env.
+        assert sink["env"] is None

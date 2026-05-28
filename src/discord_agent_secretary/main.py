@@ -264,7 +264,13 @@ def main() -> int:
     backend = make_backend(settings)
 
     client, tree = build_client()
-    register_handlers(tree, backend, settings.discord_guild_id, app_url=settings.multica_app_url)
+    register_handlers(
+        tree,
+        backend,
+        settings.discord_guild_id,
+        app_url=settings.multica_app_url,
+        member_map=settings.discord_member_map,
+    )
 
     state = _RunState()
 
