@@ -15,6 +15,7 @@ from discord_agent_secretary.webhook import (
     ReviewEvent,
     format_review_message,
     parse_review_event,
+    should_notify_discord_for_review,
     verify_signature,
 )
 
@@ -120,6 +121,26 @@ class TestParseReviewEvent:
         assert result.title == "Fix the bug"
         assert result.assignee is None
 
+    def test_valid_event_preserves_origin_metadata(self) -> None:
+        payload = {
+            "new_status": "in_review",
+            "actor_type": "agent",
+            "issue": {
+                "id": "issue-1",
+                "identifier": "VEN-123",
+                "title": "Fix the bug",
+                "origin_type": "autopilot",
+                "origin_id": "autopilot-1",
+                "origin_source": "schedule",
+            },
+        }
+        body = json.dumps(payload).encode()
+        result = parse_review_event(body)
+        assert result is not None
+        assert result.origin_type == "autopilot"
+        assert result.origin_id == "autopilot-1"
+        assert result.origin_source == "schedule"
+
     def test_valid_event_with_assignee(self) -> None:
         payload = {
             "new_status": "in_review",
@@ -192,6 +213,16 @@ class TestParseReviewEvent:
         result = parse_review_event(body, signature=wrong_sig, secret=secret)
         assert result is None
 
+    def test_missing_signature_with_configured_secret_returns_none(self) -> None:
+        payload = {
+            "new_status": "in_review",
+            "actor_type": "agent",
+            "issue": {"id": "issue-1", "identifier": "VEN-123", "title": "Test"},
+        }
+        body = json.dumps(payload).encode()
+        result = parse_review_event(body, signature="", secret="correct_secret")
+        assert result is None
+
     def test_signature_match_parses(self) -> None:
         secret = "correct_secret"
         payload = {
@@ -228,3 +259,33 @@ class TestFormatReviewMessage:
         )
         message = format_review_message(event)
         assert message == "✅ Готово к ревью: **Fix the bug** `VEN-123`"
+
+
+class TestShouldNotifyDiscordForReview:
+    def test_suppresses_automated_autopilot_review(self) -> None:
+        event = ReviewEvent(
+            issue_id="issue-1",
+            identifier="VEN-123",
+            title="Fix the bug",
+            assignee=None,
+            origin_type="autopilot",
+            origin_id="autopilot-1",
+            origin_source="schedule",
+        )
+
+        assert not should_notify_discord_for_review(event)
+
+    def test_autopilot_review_is_suppressed_regardless_of_source(self) -> None:
+        # origin_source is no longer consulted: any autopilot-origin review is
+        # suppressed from the corporate channel (routed/digested instead).
+        event = ReviewEvent(
+            issue_id="issue-1",
+            identifier="VEN-123",
+            title="Fix the bug",
+            assignee=None,
+            origin_type="autopilot",
+            origin_id="autopilot-1",
+            origin_source="manual",
+        )
+
+        assert not should_notify_discord_for_review(event)

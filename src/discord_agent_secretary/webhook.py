@@ -7,6 +7,8 @@ import json
 import logging
 from dataclasses import dataclass
 
+from .review_routing import classify_review_candidate
+
 logger = logging.getLogger(__name__)
 
 
@@ -16,6 +18,11 @@ class ReviewEvent:
     identifier: str
     title: str
     assignee: str | None
+    assignee_type: str | None = None
+    assignee_id: str | None = None
+    origin_type: str | None = None
+    origin_id: str | None = None
+    origin_source: str | None = None
 
 
 def _extract_assignee(issue: dict[str, object]) -> str | None:
@@ -25,6 +32,13 @@ def _extract_assignee(issue: dict[str, object]) -> str | None:
     assignee_display = issue.get("assignee_display_name")
     if isinstance(assignee_display, str):
         return assignee_display
+    return None
+
+
+def _extract_text(issue: dict[str, object], key: str) -> str | None:
+    value = issue.get(key)
+    if isinstance(value, str) and value:
+        return value
     return None
 
 
@@ -38,7 +52,10 @@ def verify_signature(body: bytes, signature: str, secret: str) -> bool:
 def parse_review_event(
     body: bytes, *, signature: str = "", secret: str = ""
 ) -> ReviewEvent | None:
-    if secret and signature:
+    if secret:
+        if not signature:
+            logger.warning("multica webhook: missing signature — dropping")
+            return None
         if not verify_signature(body, signature, secret):
             logger.warning("multica webhook: signature mismatch — dropping")
             return None
@@ -64,7 +81,26 @@ def parse_review_event(
         identifier=str(issue.get("identifier") or issue_id),
         title=str(issue.get("title") or issue_id),
         assignee=_extract_assignee(issue),
+        assignee_type=_extract_text(issue, "assignee_type"),
+        assignee_id=_extract_text(issue, "assignee_id"),
+        origin_type=_extract_text(issue, "origin_type"),
+        origin_id=_extract_text(issue, "origin_id"),
+        origin_source=_extract_text(issue, "origin_source"),
     )
+
+
+def should_notify_discord_for_review(event: ReviewEvent) -> bool:
+    decision = classify_review_candidate(
+        {
+            "id": event.issue_id,
+            "assignee_type": event.assignee_type or "agent",
+            "assignee_id": event.assignee_id,
+            "origin_type": event.origin_type,
+            "origin_id": event.origin_id,
+            "origin_source": event.origin_source,
+        }
+    )
+    return decision.notify_discord
 
 
 def format_review_message(event: ReviewEvent) -> str:

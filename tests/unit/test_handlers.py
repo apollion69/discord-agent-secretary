@@ -484,3 +484,96 @@ class TestRateLimitInHandler:
         i2.response.send_message.assert_awaited_once()
         kwargs = i2.response.send_message.call_args.kwargs
         assert kwargs.get("ephemeral") is True
+
+
+class TestActAsMember:
+    """`/task` attributes the issue to the real Discord requester via on_behalf_of."""
+
+    async def test_mapped_invoker_passes_on_behalf_of(self) -> None:
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.create_issue = AsyncMock(return_value=IssueRef(id="uuid-1", title="t"))
+        register_handlers(
+            tree, backend, guild_id=42, member_map={"7": "member-uuid-7"}
+        )
+
+        from discord import Object
+
+        cmd = tree.get_command("task", guild=Object(id=42))
+        assert cmd is not None
+
+        interaction = _make_interaction(user_id=7, guild_id=42)
+        interaction.response.defer = AsyncMock()
+        await cmd.callback(interaction, title="t")
+
+        assert backend.create_issue.call_args.kwargs["on_behalf_of"] == "member-uuid-7"
+
+    async def test_unmapped_invoker_falls_back_and_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.create_issue = AsyncMock(return_value=IssueRef(id="uuid-2", title="t"))
+        register_handlers(
+            tree, backend, guild_id=42, member_map={"999": "member-uuid-999"}
+        )
+
+        from discord import Object
+
+        cmd = tree.get_command("task", guild=Object(id=42))
+        assert cmd is not None
+
+        interaction = _make_interaction(user_id=7, guild_id=42)
+        interaction.response.defer = AsyncMock()
+        with caplog.at_level("WARNING"):
+            await cmd.callback(interaction, title="t")
+
+        # Task still created, attributed to the token owner (on_behalf_of=None).
+        assert backend.create_issue.call_args.kwargs["on_behalf_of"] is None
+        interaction.followup.send.assert_awaited()
+        assert any("no Multica member mapping" in r.message for r in caplog.records)
+
+    async def test_no_map_passes_none_without_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.create_issue = AsyncMock(return_value=IssueRef(id="uuid-3", title="t"))
+        register_handlers(tree, backend, guild_id=42)
+
+        from discord import Object
+
+        cmd = tree.get_command("task", guild=Object(id=42))
+        assert cmd is not None
+
+        interaction = _make_interaction(user_id=7, guild_id=42)
+        interaction.response.defer = AsyncMock()
+        with caplog.at_level("WARNING"):
+            await cmd.callback(interaction, title="t")
+
+        assert backend.create_issue.call_args.kwargs["on_behalf_of"] is None
+        assert not any("no Multica member mapping" in r.message for r in caplog.records)
+
+    async def test_no_invoker_id_does_not_warn(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # A map is configured but the interaction carried no user — we must NOT
+        # emit the "no mapping for Discord user" warning (the wording misleads).
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.create_issue = AsyncMock(return_value=IssueRef(id="uuid-4", title="t"))
+        register_handlers(tree, backend, guild_id=42, member_map={"7": "member-uuid-7"})
+
+        from discord import Object
+
+        cmd = tree.get_command("task", guild=Object(id=42))
+        assert cmd is not None
+
+        interaction = _make_interaction(user_id=7, guild_id=42)
+        interaction.user = None  # no invoker on the interaction
+        interaction.response.defer = AsyncMock()
+        with caplog.at_level("WARNING"):
+            await cmd.callback(interaction, title="t")
+
+        assert backend.create_issue.call_args.kwargs["on_behalf_of"] is None
+        assert not any("no Multica member mapping" in r.message for r in caplog.records)

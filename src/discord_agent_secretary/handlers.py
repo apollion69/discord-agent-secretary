@@ -168,6 +168,7 @@ def register_handlers(
     *,
     rate_limiter: RateLimiter | None = None,
     app_url: str = "",
+    member_map: dict[str, str] | None = None,
 ) -> None:
     """Attach `/task`, `/status`, `/assign` to `tree`.
 
@@ -179,6 +180,7 @@ def register_handlers(
     guild = discord.Object(id=guild_id) if guild_id else None
     limiter = rate_limiter if rate_limiter is not None else RateLimiter()
     _app_url = app_url.rstrip("/")
+    _member_map = member_map or {}
 
     async def _enforce_rate_limit(interaction: discord.Interaction) -> bool:
         key = (
@@ -223,6 +225,18 @@ def register_handlers(
         if not await _enforce_rate_limit(interaction):
             return
         await interaction.response.defer()
+        # Attribute the issue to the real requester. An unmapped invoker falls
+        # back to the bot's token owner so task creation never fails on a gap.
+        invoker_id = getattr(getattr(interaction, "user", None), "id", None)
+        on_behalf_of = _member_map.get(str(invoker_id)) if invoker_id is not None else None
+        # Only warn when we actually have an invoker that isn't mapped — not when
+        # the interaction carried no user at all (the wording would mislead).
+        if _member_map and invoker_id is not None and on_behalf_of is None:
+            logger.warning(
+                "no Multica member mapping for Discord user; "
+                "task will be attributed to the token owner",
+                extra=_ctx_extra(interaction),
+            )
         ref = await _safe_invoke(
             interaction,
             backend.create_issue(
@@ -230,6 +244,7 @@ def register_handlers(
                 description=description,
                 priority=priority.value if priority else None,
                 assignee=assignee,
+                on_behalf_of=on_behalf_of,
             ),
             label="create_issue",
         )
@@ -238,7 +253,7 @@ def register_handlers(
         safe_title = discord.utils.escape_markdown(getattr(ref, "title", None) or title)
         identifier = ref.identifier
         if _app_url and ref.id:
-            issue_url = f"{_app_url}/venchur/issues/{ref.id}"
+            issue_url = f"{_app_url}/venchur/issues/{identifier or ref.id}"
             ref_text = f"[{identifier or ref.id}](<{issue_url}>)"
         else:
             ref_text = f"`{identifier or ref.id}`"

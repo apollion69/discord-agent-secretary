@@ -98,6 +98,51 @@ MULTICA_WORKSPACE_ID=your-uuid   # from `multica workspace list`
 Install the Multica CLI from [github.com/multica-ai/multica/releases](https://github.com/multica-ai/multica/releases)
 or via Homebrew: `brew install multica-ai/tap/multica`.
 
+#### Member attribution (`DISCORD_MEMBER_MAP`)
+
+By default, issues created via `/task` are attributed to the bot's token owner.
+`DISCORD_MEMBER_MAP` lets you attribute each issue to the actual Discord user who
+invoked the command instead.
+
+```dotenv
+# JSON object: Discord user ID (string) → Multica member UUID (string)
+DISCORD_MEMBER_MAP={"111111111111111111":"<member-uuid>","222222222222222222":"<member-uuid>"}
+```
+
+- Unmapped Discord users fall back silently to the token owner (a warning is logged).
+- The bot token must belong to an owner or admin member of the workspace for
+  attribution to take effect; the Multica server enforces this server-side and
+  silently ignores the header for any other caller.
+- Member UUIDs are validated at startup; an invalid UUID prevents the bot from booting.
+- The full variable format and an example are documented in `.env.example`.
+
+---
+
+#### Automated review routing
+
+Agent-assigned issues with `origin_type=autopilot` (cron/autopilot tasks) are
+suppressed from the corporate Discord review channel and routed to configured
+reviewer agents instead — summarized once a day by the digest rather than pinged
+per task. Requires the Multica server to expose `origin_type` in the issue list
+(added 2026-05). Human/operator review tasks (no autopilot origin) are still
+notified normally.
+
+```dotenv
+DISCORD_REVIEW_CHANNEL_ID=1234567890
+MULTICA_REVIEW_ROUTING_MODE=off          # off | subscribe | assign
+MULTICA_REVIEW_DRY_RUN=true              # rollback switch: true disables Multica mutations
+MULTICA_AUTOMATED_REVIEWERS=checker-agent
+MULTICA_REWORK_STATUS=todo
+MULTICA_REVIEW_STATE_PATH=/opt/discord-secretary/review-routing.json
+```
+
+Deploy with `MULTICA_REVIEW_DRY_RUN=true` first. Evidence commands:
+
+```bash
+multica issue list --status in_review --output json
+pytest tests/unit/test_review_routing.py tests/unit/test_review_router.py tests/unit/test_stale_review.py -q
+```
+
 #### GitHub Issues backend (stub — contribute!)
 
 ```dotenv

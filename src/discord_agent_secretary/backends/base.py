@@ -199,6 +199,7 @@ class IssueBackend(Protocol):
         description: str | None = None,
         priority: str | None = None,
         assignee: str | None = None,
+        on_behalf_of: str | None = None,
     ) -> IssueRef: ...
 
     async def get_issue(self, issue_id: str) -> IssueRef: ...
@@ -223,6 +224,7 @@ class IssueBackendBase(ABC):
         description: str | None = None,
         priority: str | None = None,
         assignee: str | None = None,
+        on_behalf_of: str | None = None,
     ) -> IssueRef: ...
 
     @abstractmethod

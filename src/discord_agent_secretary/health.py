@@ -50,7 +50,7 @@ class HealthcheckHandle:
 def _make_handler(
     is_ready: Callable[[], bool],
     webhook_callback: OnWebhook | None = None,
-    poll_state: "PollState | None" = None,
+    poll_state: PollState | None = None,
 ) -> type[http.server.BaseHTTPRequestHandler]:
     class _Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 — stdlib API
@@ -126,7 +126,7 @@ def start_healthcheck(
     *,
     bind: str = "0.0.0.0",
     webhook_callback: OnWebhook | None = None,
-    poll_state: "PollState | None" = None,
+    poll_state: PollState | None = None,
 ) -> HealthcheckHandle | None:
     """Start the HTTP probe server in a daemon thread.
 

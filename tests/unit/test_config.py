@@ -50,6 +50,22 @@ class TestSettingsFromEnv:
         s = Settings(_env_file=None)
         assert s.discord_watch_channels == []
 
+    def test_automated_reviewers_parsed_from_csv(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("MULTICA_AUTOMATED_REVIEWERS", "alice, checker-agent")
+        s = Settings(_env_file=None)
+        assert s.multica_automated_reviewers == ["alice", "checker-agent"]
+
+    def test_automated_reviewers_parsed_from_dotenv_csv(self, tmp_path, clean_settings):
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "MULTICA_AUTOMATED_REVIEWERS=alice, checker-agent\n",
+            encoding="utf-8",
+        )
+
+        s = Settings(_env_file=env_file)
+
+        assert s.multica_automated_reviewers == ["alice", "checker-agent"]
+
     def test_discord_guild_id_coerced_to_int(self, monkeypatch, clean_settings):
         monkeypatch.setenv("DISCORD_GUILD_ID", "999888777")
         s = Settings(_env_file=None)
@@ -138,6 +154,33 @@ class TestSettingsValidation:
         s = Settings(_env_file=None)
         assert s.healthcheck_port == 0
 
+    def test_review_routing_defaults_are_dry_run(self, clean_settings):
+        s = Settings(_env_file=None)
+        assert s.multica_automated_reviewers == []
+        assert s.multica_review_routing_mode == "off"
+        assert s.multica_review_dry_run is True
+        assert s.multica_rework_status == "todo"
+        assert s.multica_review_state_path == "/opt/discord-secretary/review-routing.json"
+
+    def test_invalid_review_routing_mode_rejected(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("MULTICA_REVIEW_ROUTING_MODE", "invalid")
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None)
+
+    def test_mutating_review_webhook_routing_requires_secret(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("DISCORD_REVIEW_CHANNEL_ID", "123")
+        monkeypatch.setenv("MULTICA_REVIEW_ROUTING_MODE", "subscribe")
+        monkeypatch.setenv("MULTICA_REVIEW_DRY_RUN", "false")
+        with pytest.raises(ValidationError, match="MULTICA_WEBHOOK_SECRET"):
+            Settings(_env_file=None)
+
+    def test_dry_run_review_webhook_routing_allows_missing_secret(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("DISCORD_REVIEW_CHANNEL_ID", "123")
+        monkeypatch.setenv("MULTICA_REVIEW_ROUTING_MODE", "subscribe")
+        monkeypatch.setenv("MULTICA_REVIEW_DRY_RUN", "true")
+        s = Settings(_env_file=None)
+        assert s.multica_review_dry_run is True
+
 
 class TestSettingsMemoization:
     def test_get_settings_is_memoized(self, clean_settings):
@@ -155,3 +198,21 @@ class TestSettingsMemoization:
         s2 = get_settings()
         assert s2.log_level == "ERROR"
         assert s1 is not s2
+
+
+class TestMemberMapValidation:
+    """DISCORD_MEMBER_MAP UUID values are validated at load (fail-fast)."""
+
+    def test_valid_uuids_accepted(self, clean_settings):
+        s = Settings(
+            _env_file=None,
+            discord_member_map={"219764926061871104": "aebb6b6f-d07d-4ea0-9cfe-3576987ccfbe"},
+        )
+        assert s.discord_member_map["219764926061871104"].startswith("aebb6b6f")
+
+    def test_invalid_uuid_rejected(self, clean_settings):
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, discord_member_map={"123": "not-a-uuid"})
+
+    def test_empty_map_is_default(self, clean_settings):
+        assert Settings(_env_file=None).discord_member_map == {}

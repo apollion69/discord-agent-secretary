@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any, Final
 
 from .base import (
@@ -140,12 +141,12 @@ class MulticaBackend(IssueBackendBase):
     def circuit(self) -> CircuitBreaker:
         return self._circuit
 
-    async def _invoke(self, *args: str) -> bytes:
+    async def _invoke(self, *args: str, env: dict[str, str] | None = None) -> bytes:
         # Fast-fail without spawning if the breaker is open.
         self._circuit.before_call()
 
         try:
-            stdout = await self._spawn_and_read(*args)
+            stdout = await self._spawn_and_read(*args, env=env)
         except (BackendTimeoutError, BackendCallError):
             self._circuit.on_failure()
             raise
@@ -155,12 +156,13 @@ class MulticaBackend(IssueBackendBase):
         self._circuit.on_success()
         return stdout
 
-    async def _spawn_and_read(self, *args: str) -> bytes:
+    async def _spawn_and_read(self, *args: str, env: dict[str, str] | None = None) -> bytes:
         proc = await asyncio.create_subprocess_exec(
             self._cli_path,
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         # `proc.stdout` / `proc.stderr` are guaranteed non-None when both
         # are PIPE'd, but mypy can't narrow that — assert for clarity.
@@ -204,6 +206,19 @@ class MulticaBackend(IssueBackendBase):
             )
         return stdout
 
+    def _parse_ref(self, raw: bytes) -> IssueRef:
+        """Parse a CLI JSON response into an IssueRef.
+
+        A malformed CLI response counts as a circuit-breaker failure: a
+        persistently broken CLI path would otherwise drain calls indefinitely
+        without ever opening the breaker (the spawn itself "succeeded").
+        """
+        try:
+            return _to_issue_ref(_parse_json_output(raw))
+        except MulticaParseError:
+            self._circuit.on_failure()
+            raise
+
     async def create_issue(
         self,
         title: str,
@@ -211,6 +226,7 @@ class MulticaBackend(IssueBackendBase):
         description: str | None = None,
         priority: str | None = None,
         assignee: str | None = None,
+        on_behalf_of: str | None = None,
     ) -> IssueRef:
         # NOT retried: a partial first attempt may have created an issue —
         # retrying would risk duplicates. The circuit breaker still applies.
@@ -221,15 +237,20 @@ class MulticaBackend(IssueBackendBase):
             args += ["--priority", priority]
         if assignee:
             args += ["--assignee", assignee]
-        raw = await self._invoke(*args)
-        return _to_issue_ref(_parse_json_output(raw))
+        # Act-as-member: forward MULTICA_ON_BEHALF_OF only when set, so other
+        # calls inherit the parent env unchanged (env=None means "inherit").
+        env: dict[str, str] | None = None
+        if on_behalf_of:
+            env = {**os.environ, "MULTICA_ON_BEHALF_OF": on_behalf_of}
+        raw = await self._invoke(*args, env=env)
+        return self._parse_ref(raw)
 
     async def get_issue(self, issue_id: str) -> IssueRef:
         raw = await with_retry(
             lambda: self._invoke("issue", "get", issue_id, "--output", "json"),
             retry_on=(BackendTimeoutError,),
         )
-        return _to_issue_ref(_parse_json_output(raw))
+        return self._parse_ref(raw)
 
     async def assign_issue(self, issue_id: str, to: str) -> IssueRef:
         raw = await with_retry(
@@ -238,7 +259,7 @@ class MulticaBackend(IssueBackendBase):
             ),
             retry_on=(BackendTimeoutError,),
         )
-        return _to_issue_ref(_parse_json_output(raw))
+        return self._parse_ref(raw)
 
     async def update_status(self, issue_id: str, status: str) -> IssueRef:
         raw = await with_retry(
@@ -247,4 +268,4 @@ class MulticaBackend(IssueBackendBase):
             ),
             retry_on=(BackendTimeoutError,),
         )
-        return _to_issue_ref(_parse_json_output(raw))
+        return self._parse_ref(raw)
