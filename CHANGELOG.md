@@ -5,6 +5,124 @@ All notable changes to `discord-agent-secretary` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.6] - 2026-05-29
+
+### Added
+
+- **Mention scanner** (`MentionScanWorker`): polls active issues for
+  `mention://member/<id>` in comments, maps member IDs to Discord users via
+  `DISCORD_MEMBER_MAP`, and pings `<@discord_id>` in the review channel.
+  Per-issue `updated_at` gates re-scans; comment-id seen-set deduplicates.
+  Config: `MENTION_SCAN_ENABLED`, `MENTION_SCAN_STATUSES`.
+- **Start-of-work approval gate** (`[approval-request:start]` marker): agent posts
+  the marker and the bot renders 🟢 "Разрешить начать" (→ `in_progress` +
+  `[start-approved]` comment) / 🔴 "Отклонить" (→ `blocked`) buttons. The waiting
+  agent polls the machine-readable comment before proceeding.
+
+### Fixed
+
+- Approval callback calls `defer()` before invoking the CLI so the 3-second
+  Discord interaction window cannot expire mid-subprocess.
+- `apply_human_verdict` now enforces a CLI timeout; a bounded subprocess can no
+  longer hang indefinitely.
+- Mention-scanner comment snippets are `escape_markdown`-sanitized; `AllowedMentions`
+  blocks `@everyone` / `@here` / role pings injected via Multica comment text.
+- Seen-set eviction in the mention scanner is now insertion-ordered (was
+  lexicographic on UUIDs, which silently dropped recent IDs on overflow).
+- `DigestWorker._post` returns a bool; the day is marked sent only on successful
+  Discord delivery, not on attempted delivery.
+- `ApprovalButton` registers on `DISCORD_MEMBER_MAP` alone, not gated on mention
+  scan being enabled — the two features are independent.
+- Worker done-callbacks log `CRITICAL` when a background worker exits unexpectedly.
+
+### Security
+
+- `DISCORD_*` secrets stripped from the CLI subprocess environment before
+  `apply_human_verdict` spawns the Multica CLI — env-var leak path closed.
+
+---
+
+## [0.2.5] - 2026-05-28
+
+### Added
+
+- **Discord approval buttons** (`[approval-request]` marker): when an agent posts
+  the marker, the bot renders 🟢 approve (→ `done`) / 🔴 rework (→ `todo`) /
+  🔵 open-in-Multica buttons. Click applied as the clicking member via
+  act-as-member; only `DISCORD_MEMBER_MAP`-mapped members may click; buttons
+  survive restarts (`DynamicItem`).
+- **Act-as-member attribution**: `/task` maps the invoking Discord user to a
+  Multica member UUID via `DISCORD_MEMBER_MAP` and passes it as `on_behalf_of`,
+  so tasks show the real requester as creator instead of the bot's token owner.
+  Unmapped invokers fall back to the token owner with a warning.
+- **Automated review routing**: autopilot (`origin_type=autopilot`) `in_review`
+  issues are routed to a configurable reviewer agent instead of flooding the
+  review channel with per-task pings.
+- **Stale review scanner** (`discord-agent-secretary-stale-review` entry point):
+  detects issues stuck in `in_review` beyond a configurable age and re-notifies.
+- **Daily autopilot digest** (`DigestWorker`): one summary per day of autopilot
+  issues awaiting review + completed in the last 24 h, replacing per-task pings
+  for cron-originated work. Config: `DIGEST_ENABLED`, `DIGEST_HOUR`.
+
+### Fixed
+
+- Review-router (assign mode) now reassigns the issue to the reviewer **before**
+  posting the routing comment, so the triggering comment dispatches the reviewer
+  agent rather than the producer.
+- Automated review classifier gates on `origin_type=='autopilot'` (the
+  authoritative field) — the previous `origin_source` check was always inert
+  because `origin_source` is not a first-class issue field.
+
+---
+
+## [0.2.4] - 2026-05-22
+
+### Added
+
+- **Webhook endpoint** (`POST /hooks/multica`): healthcheck server gains a
+  webhook receiver; Multica `status→in_review` transitions by agents post a
+  "✅ Готово к ревью" notification to the Discord review channel.
+  Optional HMAC-SHA256 signature verification via `MULTICA_WEBHOOK_SECRET`.
+- **Pull-model `in_review` poller** (`PullWorker`): background coroutine polls
+  `multica issue list --status in_review` every `MULTICA_POLL_INTERVAL` seconds
+  and pings Discord on new agent-assigned issues. First pass seeds silently to
+  avoid startup floods. Dedup state persisted to `MULTICA_SEEN_PATH`.
+- Clickable `[VEN-NNN](<url>)` Markdown link in the `/task` created reply when
+  `MULTICA_APP_URL` is set; falls back to bare identifier or raw UUID.
+
+### Fixed
+
+- Issue URLs in both the pull-worker notification and the `/task` reply now use
+  the issue UUID for the Multica frontend route (the frontend routes by UUID, not
+  by identifier slug).
+
+---
+
+## [0.2.3] - 2026-05-08
+
+### Fixed
+
+- Permission safety check (`assert_safe_permissions`) now evaluates only the
+  bot's explicitly assigned roles, excluding the `@everyone` role (whose
+  `guild.id`-keyed permissions are server-wide defaults, not bot-specific grants).
+  Eliminates false-positive `REFUSE_PERMS` on servers where `@everyone` carries
+  `mention_everyone`.
+- `verify_guilds_safe` calls `guild.fetch_member()` (REST) instead of
+  `guild.get_member()` (local cache), ensuring the security check always uses
+  Discord's authoritative current role state and not stale gateway data.
+
+---
+
+## [0.2.2] - 2026-05-08
+
+### Fixed
+
+- Passes `HTTPS_PROXY` (fallback `HTTP_PROXY`) to `discord.Client` as the
+  `proxy=` kwarg — aiohttp does not auto-detect proxy env vars, so WebSocket
+  and REST calls now route correctly on firewall-gated deployments.
+
+---
+
 ## [0.2.0] - 2026-05-08
 
 ### Added
