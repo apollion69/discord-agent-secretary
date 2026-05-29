@@ -30,6 +30,7 @@ from .discord_client import (
 from .handlers import register_handlers
 from .health import HealthcheckHandle, start_healthcheck
 from .logging_setup import configure_logging
+from .mention_scanner import MentionScanWorker
 from .pull_worker import ReviewPollWorker
 from .review_router import AutomatedReviewRouter, CliReviewBackend
 from .webhook import (
@@ -81,6 +82,7 @@ class _RunState:
     poll_worker: ReviewPollWorker | None = None
     poll_task: asyncio.Task[None] | None = None
     digest_task: asyncio.Task[None] | None = None
+    mention_task: asyncio.Task[None] | None = None
     review_router: AutomatedReviewRouter | None = None
 
 
@@ -459,6 +461,23 @@ def main() -> int:
             extra={"channel_id": settings.discord_review_channel_id, "hour": settings.digest_hour},
         )
 
+    mention_worker: MentionScanWorker | None = None
+    if settings.discord_review_channel_id and settings.mention_scan_enabled and settings.discord_member_map:
+        mention_worker = MentionScanWorker(
+            cli_path=settings.multica_cli_path or "multica",
+            channel_id=settings.discord_review_channel_id,
+            app_url=settings.multica_app_url,
+            statuses=settings.mention_scan_statuses,
+            discord_member_map=settings.discord_member_map,
+            state_path=Path(settings.mention_scan_state_path),
+            poll_interval=settings.multica_poll_interval,
+            cli_timeout=max(settings.multica_cli_timeout, 30.0),
+        )
+        logger.info(
+            "mention scanner configured",
+            extra={"channel_id": settings.discord_review_channel_id, "statuses": settings.mention_scan_statuses},
+        )
+
     health_handle = start_healthcheck(
         settings.healthcheck_port,
         is_ready=client.is_ready,
@@ -491,6 +510,11 @@ def main() -> int:
             state.digest_task = asyncio.create_task(
                 digest_worker.run(client),
                 name="autopilot-digest-worker",
+            )
+        if mention_worker is not None and state.mention_task is None:
+            state.mention_task = asyncio.create_task(
+                mention_worker.run(client),
+                name="mention-scan-worker",
             )
 
     try:

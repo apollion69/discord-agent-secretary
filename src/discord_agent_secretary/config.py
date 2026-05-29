@@ -18,7 +18,7 @@ from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 from pydantic_settings.sources import DotEnvSettingsSource, EnvSettingsSource
 
-_CSV_FIELDS = {"discord_watch_channels", "multica_automated_reviewers"}
+_CSV_FIELDS = {"discord_watch_channels", "multica_automated_reviewers", "mention_scan_statuses"}
 
 
 class _CsvFriendlyEnvSource(EnvSettingsSource):
@@ -215,6 +215,20 @@ class Settings(BaseSettings):
         description="Idempotent state file for automated review routing and verdicts.",
     )
 
+    # === Mention notifications ===
+    mention_scan_enabled: bool = Field(
+        default=True,
+        description="Scan Multica comments for member @mentions and ping the mapped Discord user.",
+    )
+    mention_scan_statuses: list[str] = Field(
+        default_factory=lambda: ["todo", "in_progress", "in_review", "blocked"],
+        description="CSV of issue statuses whose comments are scanned for @mentions.",
+    )
+    mention_scan_state_path: str = Field(
+        default="/opt/discord-secretary/mention-seen.json",
+        description="Dedup state for mention notifications (seen comment ids + issue updated_at).",
+    )
+
 
     # === GitHub backend ===
     github_token: str = Field(default="", description="GitHub PAT or App-installation token")
@@ -257,7 +271,7 @@ class Settings(BaseSettings):
                 ) from e
         return v
 
-    @field_validator("discord_watch_channels", "multica_automated_reviewers", mode="before")
+    @field_validator("discord_watch_channels", "multica_automated_reviewers", "mention_scan_statuses", mode="before")
     @classmethod
     def _split_csv_list(cls, v: object) -> object:
         """Accept int, str, or list — coerce comma-separated env strings.
