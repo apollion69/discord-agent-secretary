@@ -23,7 +23,7 @@ import discord
 from .approval_buttons import (
     build_approval_view,
     format_approval_request,
-    is_approval_request,
+    parse_approval_type,
     strip_marker,
 )
 
@@ -187,17 +187,17 @@ class MentionScanWorker:
                         if first_pass:
                             continue  # seed silently
                         content = c.get("content") or ""
-                        approval = is_approval_request(content)
+                        approval_type = parse_approval_type(content)
                         identifier = str(issue.get("identifier") or iid)
                         for member_id in extract_member_mentions(content):
                             did = member_map.get(member_id)
                             if not did:
                                 continue
-                            if approval:
+                            if approval_type:
                                 msg = format_approval_request(
-                                    did, identifier, readable_snippet(strip_marker(content))
+                                    approval_type, did, identifier, readable_snippet(strip_marker(content))
                                 )
-                                view = build_approval_view(iid, self._app_url)
+                                view = build_approval_view(approval_type, iid, self._app_url)
                             else:
                                 msg = format_mention_ping(
                                     did, identifier, iid, self._app_url, readable_snippet(content)
@@ -206,7 +206,7 @@ class MentionScanWorker:
                             await self._send(client, msg, view=view)
                             logger.info(
                                 "mention_scan_worker: notified",
-                                extra={"issue": identifier, "member_id": member_id, "approval": approval},
+                                extra={"issue": identifier, "member_id": member_id, "approval": approval_type},
                             )
                 if first_pass or changed:
                     _save_state(self._state_path, seen, issue_seen)

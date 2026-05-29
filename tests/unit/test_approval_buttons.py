@@ -1,4 +1,4 @@
-"""Unit tests for approval-button helpers."""
+"""Unit tests for approval-button helpers (start + completion gates)."""
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -10,7 +10,7 @@ from discord_agent_secretary.approval_buttons import (
     apply_human_verdict,
     build_approval_view,
     format_approval_request,
-    is_approval_request,
+    parse_approval_type,
     strip_marker,
 )
 
@@ -20,34 +20,40 @@ UUID = "b9b2070e-e5f8-450b-aadc-d3268970c9a5"
 
 
 class TestMarker:
-    def test_detects_marker(self):
-        assert is_approval_request("please sign off [approval-request] thanks")
-        assert is_approval_request("[APPROVAL-REQUEST]")
+    def test_bare_marker_is_done(self):
+        assert parse_approval_type("sign off [approval-request] now") == "done"
+
+    def test_explicit_start(self):
+        assert parse_approval_type("[approval-request:start] go?") == "start"
+
+    def test_explicit_done(self):
+        assert parse_approval_type("[APPROVAL-REQUEST:DONE]") == "done"
 
     def test_no_marker(self):
-        assert not is_approval_request("just a normal @mention")
+        assert parse_approval_type("just a @mention") is None
 
-    def test_strip_marker(self):
-        assert strip_marker("approve this [approval-request] now") == "approve this  now".strip()
+    def test_strip(self):
+        assert strip_marker("begin [approval-request:start] please") == "begin  please".strip()
 
 
-class TestRender:
-    def test_approval_message(self):
-        msg = format_approval_request("123", "VEN-9", "deploy the thing")
-        assert "<@123>" in msg
-        assert "VEN-9" in msg
-        assert "deploy the thing" in msg
-
-    def test_view_has_three_buttons_with_app_url(self):
-        view = build_approval_view(UUID, "http://m.local:3000")
+class TestView:
+    def test_start_view_buttons(self):
+        view = build_approval_view("start", UUID, "http://m.local:3000")
         assert len(view.children) == 3
         dyn = [c for c in view.children if isinstance(c, ApprovalButton)]
-        assert {b.action for b in dyn} == {"approve", "rework"}
-        assert all(b.issue_id == UUID for b in dyn)
+        assert {b.action for b in dyn} == {"start_go", "start_decline"}
 
-    def test_view_two_buttons_without_app_url(self):
-        view = build_approval_view(UUID, "")
-        assert len(view.children) == 2
+    def test_done_view_buttons(self):
+        view = build_approval_view("done", UUID, "http://m.local:3000")
+        dyn = [c for c in view.children if isinstance(c, ApprovalButton)]
+        assert {b.action for b in dyn} == {"done_approve", "done_rework"}
+
+    def test_view_no_app_url_two_buttons(self):
+        assert len(build_approval_view("start", UUID, "").children) == 2
+
+    def test_message_text_by_type(self):
+        assert "начала работы" in format_approval_request("start", "1", "VEN-9", "x")
+        assert "завершения" in format_approval_request("done", "1", "VEN-9", "x")
 
 
 class _FakeProc:
@@ -55,43 +61,57 @@ class _FakeProc:
         self.returncode = rc
 
     async def communicate(self):
-        return b"{}", b"" if self.returncode == 0 else b"boom"
+        return b"{}", b""
 
 
 class TestApplyVerdict:
-    async def test_approve_maps_to_done(self):
-        captured = {}
+    async def test_start_go_sets_in_progress_and_comments(self):
+        calls = []
 
         async def fake_exec(*args, **kwargs):
-            captured["args"] = args
-            captured["env"] = kwargs.get("env")
+            calls.append((args, kwargs.get("env", {}).get("MULTICA_ON_BEHALF_OF")))
             return _FakeProc(0)
 
         with patch("discord_agent_secretary.approval_buttons.asyncio.create_subprocess_exec", side_effect=fake_exec):
-            ok = await apply_human_verdict("multica", UUID, "approve", "member-uuid")
+            ok = await apply_human_verdict("multica", UUID, "start_go", "m-uuid", "Egor")
         assert ok is True
-        assert "done" in captured["args"]
-        assert captured["env"]["MULTICA_ON_BEHALF_OF"] == "member-uuid"
+        # two CLI calls: status in_progress, then the [start-approved] comment
+        assert any("in_progress" in a for a, _ in calls)
+        assert any("comment" in a and any("[start-approved]" in str(x) for x in a) for a, _ in calls)
+        assert all(env == "m-uuid" for _, env in calls)
 
-    async def test_rework_maps_to_todo(self):
-        captured = {}
+    async def test_start_decline_sets_blocked(self):
+        seen = []
 
         async def fake_exec(*args, **kwargs):
-            captured["args"] = args
+            seen.append(args)
             return _FakeProc(0)
 
         with patch("discord_agent_secretary.approval_buttons.asyncio.create_subprocess_exec", side_effect=fake_exec):
-            ok = await apply_human_verdict("multica", UUID, "rework", "m")
+            ok = await apply_human_verdict("multica", UUID, "start_decline", "m", "X")
         assert ok is True
-        assert "todo" in captured["args"]
+        assert any("blocked" in a for a in seen)
+
+    async def test_done_approve_sets_done_no_comment(self):
+        seen = []
+
+        async def fake_exec(*args, **kwargs):
+            seen.append(args)
+            return _FakeProc(0)
+
+        with patch("discord_agent_secretary.approval_buttons.asyncio.create_subprocess_exec", side_effect=fake_exec):
+            ok = await apply_human_verdict("multica", UUID, "done_approve", "m", "X")
+        assert ok is True
+        assert any("done" in a for a in seen)
+        assert not any("comment" in a for a in seen)
 
     async def test_unknown_action_rejected(self):
-        assert await apply_human_verdict("multica", UUID, "nope", "m") is False
+        assert await apply_human_verdict("multica", UUID, "nope", "m", "X") is False
 
-    async def test_cli_failure_returns_false(self):
+    async def test_status_failure_returns_false(self):
         async def fake_exec(*args, **kwargs):
             return _FakeProc(2)
 
         with patch("discord_agent_secretary.approval_buttons.asyncio.create_subprocess_exec", side_effect=fake_exec):
-            ok = await apply_human_verdict("multica", UUID, "approve", "m")
+            ok = await apply_human_verdict("multica", UUID, "done_approve", "m", "X")
         assert ok is False
