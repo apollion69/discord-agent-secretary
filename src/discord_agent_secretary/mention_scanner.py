@@ -20,6 +20,13 @@ from typing import Any
 
 import discord
 
+from .approval_buttons import (
+    build_approval_view,
+    format_approval_request,
+    is_approval_request,
+    strip_marker,
+)
+
 logger = logging.getLogger(__name__)
 
 # Matches a member mention link and captures the member id.
@@ -143,7 +150,7 @@ class MentionScanWorker:
             out.extend(i for i in (arr or []) if isinstance(i, dict) and i.get("id"))
         return out
 
-    async def _send(self, client: discord.Client, message: str) -> None:
+    async def _send(self, client: discord.Client, message: str, view: discord.ui.View | None = None) -> None:
         channel = client.get_channel(self._channel_id)
         if channel is None:
             try:
@@ -152,7 +159,7 @@ class MentionScanWorker:
                 logger.warning("mention channel unavailable", extra={"detail": str(exc)})
                 return
         if isinstance(channel, discord.abc.Messageable):
-            await channel.send(message)
+            await channel.send(message, view=view) if view is not None else await channel.send(message)
 
     async def run(self, client: discord.Client) -> None:
         seen, issue_seen = _load_state(self._state_path)
@@ -179,16 +186,28 @@ class MentionScanWorker:
                         seen.add(cid)
                         if first_pass:
                             continue  # seed silently
-                        for member_id in extract_member_mentions(c.get("content") or ""):
+                        content = c.get("content") or ""
+                        approval = is_approval_request(content)
+                        identifier = str(issue.get("identifier") or iid)
+                        for member_id in extract_member_mentions(content):
                             did = member_map.get(member_id)
                             if not did:
                                 continue
-                            msg = format_mention_ping(
-                                did, str(issue.get("identifier") or iid), iid,
-                                self._app_url, readable_snippet(c.get("content") or ""),
+                            if approval:
+                                msg = format_approval_request(
+                                    did, identifier, readable_snippet(strip_marker(content))
+                                )
+                                view = build_approval_view(iid, self._app_url)
+                            else:
+                                msg = format_mention_ping(
+                                    did, identifier, iid, self._app_url, readable_snippet(content)
+                                )
+                                view = None
+                            await self._send(client, msg, view=view)
+                            logger.info(
+                                "mention_scan_worker: notified",
+                                extra={"issue": identifier, "member_id": member_id, "approval": approval},
                             )
-                            await self._send(client, msg)
-                            logger.info("mention_scan_worker: notified", extra={"issue": issue.get("identifier"), "member_id": member_id})
                 if first_pass or changed:
                     _save_state(self._state_path, seen, issue_seen)
                     first_pass = False

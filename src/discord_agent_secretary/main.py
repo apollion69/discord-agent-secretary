@@ -19,6 +19,7 @@ from pathlib import Path
 import discord
 from discord import app_commands
 
+from .approval_buttons import ApprovalButton
 from .backends import make_backend
 from .config import get_settings
 from .digest_worker import DigestWorker
@@ -388,6 +389,10 @@ def main() -> int:
     backend = make_backend(settings)
 
     client, tree = build_client()
+    # Persistent approval buttons: register the dynamic item so clicks are routed
+    # by custom_id even after a restart (no in-memory View needed).
+    if settings.mention_scan_enabled and settings.discord_member_map:
+        client.add_dynamic_items(ApprovalButton)
     register_handlers(
         tree,
         backend,
