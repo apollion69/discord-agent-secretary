@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "discord-agent-secretary"
-version = "0.2.5"
+version = "0.2.6"
 description = "Discord bot that turns slash commands and channel chatter into issues across Multica, GitHub, Linear, Jira via a pluggable backend protocol."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -18,21 +18,26 @@ class FakeReviewBackend:
     comments: list[tuple[str, str]] = field(default_factory=list)
     assignments: list[tuple[str, str]] = field(default_factory=list)
     statuses: list[tuple[str, str]] = field(default_factory=list)
+    calls: list[str] = field(default_factory=list)
 
     async def list_comments(self, issue_id: str) -> list[dict[str, object]]:
         return self.listed_comments.get(issue_id, [])
 
     async def add_subscriber(self, issue_id: str, reviewer_ref: str) -> None:
         self.subscribers.append((issue_id, reviewer_ref))
+        self.calls.append("subscriber")
 
     async def add_comment(self, issue_id: str, content: str) -> None:
         self.comments.append((issue_id, content))
+        self.calls.append("comment")
 
     async def assign_issue(self, issue_id: str, assignee_ref: str) -> None:
         self.assignments.append((issue_id, assignee_ref))
+        self.calls.append("assign")
 
     async def update_status(self, issue_id: str, status: str) -> None:
         self.statuses.append((issue_id, status))
+        self.calls.append("status")
 
 
 def automated_issue() -> dict[str, object]:
@@ -97,6 +102,49 @@ async def test_route_issue_is_idempotent_and_preserves_producer(tmp_path) -> Non
     assert '"expected_verdicts": ["approve_to_done", "request_rework_to_todo"]' in backend.comments[0][1]
     assert backend.assignments == [("issue-1", "checker-agent")]
     assert router.load_state()["issues"]["issue-1"]["producer_agent_id"] == "producer-agent"
+
+
+@pytest.mark.asyncio
+async def test_assign_mode_reassigns_reviewer_before_routing_comment(tmp_path) -> None:
+    """In assign mode the reviewer must be assigned BEFORE the routing comment.
+
+    The routing comment dispatches the issue assignee. If the producer is still
+    assigned when the comment lands, the producer (e.g. Codex-worker) wakes into a
+    no-op session. Assigning the reviewer first makes the comment dispatch the
+    reviewer instead, eliminating the wasteful producer trigger.
+    """
+    backend = FakeReviewBackend()
+    router = AutomatedReviewRouter(
+        reviewer_refs=["checker-agent"],
+        routing_mode="assign",
+        rework_status="todo",
+        dry_run=False,
+        state_path=tmp_path / "routing.json",
+        backend=backend,
+    )
+
+    await router.route_issue(automated_issue())
+
+    assert backend.calls == ["subscriber", "assign", "comment"]
+    assert backend.calls.index("assign") < backend.calls.index("comment")
+
+
+@pytest.mark.asyncio
+async def test_subscribe_mode_posts_comment_without_reassigning(tmp_path) -> None:
+    backend = FakeReviewBackend()
+    router = AutomatedReviewRouter(
+        reviewer_refs=["checker-agent"],
+        routing_mode="subscribe",
+        rework_status="todo",
+        dry_run=False,
+        state_path=tmp_path / "routing.json",
+        backend=backend,
+    )
+
+    await router.route_issue(automated_issue())
+
+    assert backend.calls == ["subscriber", "comment"]
+    assert backend.assignments == []
 
 
 @pytest.mark.asyncio

@@ -342,9 +342,14 @@ class AutomatedReviewRouter:
             return ReviewRouteResult(issue_id=issue_id, outcome="dry_run", reviewer_ref=reviewer_ref)
 
         await self._backend.add_subscriber(issue_id, reviewer_ref)
-        await self._backend.add_comment(issue_id, comment)
         if self._routing_mode == "assign":
+            # Reassign to the reviewer BEFORE posting the routing comment. The
+            # triggering comment then dispatches the reviewer (intended), not the
+            # producer. In `subscribe` mode the producer stays the assignee and is
+            # pinged into a no-op session by every routing/verdict comment — only
+            # `assign` mode removes the producer from that wasteful loop.
             await self._backend.assign_issue(issue_id, reviewer_ref)
+        await self._backend.add_comment(issue_id, comment)
 
         issues[issue_id] = record
         self._save_state(state)
