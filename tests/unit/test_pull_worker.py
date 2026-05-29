@@ -1,47 +1,159 @@
-"""Unit tests for the pull poller's notification selection."""
+"""Unit tests for pull-model review notification filtering."""
 from __future__ import annotations
+
+import asyncio
+import json
+from types import SimpleNamespace
 
 import pytest
 
-from discord_agent_secretary.pull_worker import select_fresh
+from discord_agent_secretary.pull_worker import ReviewPollWorker, _split_fresh_reviews
 
 pytestmark = pytest.mark.unit
 
 
-def _issue(id_: str, *, assignee="agent", origin=None):
-    d = {"id": id_, "assignee_type": assignee}
-    if origin is not None:
-        d["origin_type"] = origin
-    return d
+class FakeReviewRouter:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.routed_issue_ids: list[str] = []
+
+    async def route_issue(self, issue: dict[str, object]):
+        issue_id = str(issue["id"])
+        self.routed_issue_ids.append(issue_id)
+        if self.fail:
+            raise RuntimeError("route failed")
+        return SimpleNamespace(outcome="routed", reviewer_ref="checker-agent")
 
 
-class TestSelectFresh:
-    def test_autopilot_issue_is_suppressed(self):
-        issues = [_issue("a", origin="autopilot")]
-        assert select_fresh(issues, set()) == []
+def automated_issue(issue_id: str = "auto-1") -> dict[str, object]:
+    return {
+        "id": issue_id,
+        "identifier": "VEN-1",
+        "assignee_type": "agent",
+        "origin_type": "autopilot",
+        "origin_id": "autopilot-1",
+        "origin_source": "schedule",
+    }
 
-    def test_human_agent_issue_is_notified(self):
-        issues = [_issue("a", origin=None)]  # no autopilot origin
-        assert [i["id"] for i in select_fresh(issues, set())] == ["a"]
 
-    def test_quick_create_is_notified(self):
-        issues = [_issue("a", origin="quick_create")]
-        assert [i["id"] for i in select_fresh(issues, set())] == ["a"]
+def test_split_fresh_reviews_suppresses_automated_autopilot() -> None:
+    notifiable, suppressed = _split_fresh_reviews(
+        [
+            {
+                "id": "auto-1",
+                "assignee_type": "agent",
+                "origin_type": "autopilot",
+                "origin_source": "schedule",
+            },
+            {
+                "id": "manual-1",
+                "assignee_type": "agent",
+                "origin_type": "autopilot",
+                "origin_source": "manual",
+            },
+            {
+                "id": "member-1",
+                "assignee_type": "member",
+                "origin_type": "autopilot",
+                "origin_source": "manual",
+            },
+        ],
+        seen=set(),
+    )
 
-    def test_non_agent_assignee_is_skipped(self):
-        issues = [_issue("a", assignee="squad", origin=None)]
-        assert select_fresh(issues, set()) == []
+    # All agent-assigned autopilot issues are suppressed+routed regardless of
+    # source; the member-assigned one is neither notified nor routed.
+    assert [issue["id"] for issue in notifiable] == []
+    assert [issue["id"] for issue in suppressed] == ["auto-1", "manual-1"]
 
-    def test_seen_issue_is_skipped(self):
-        issues = [_issue("a", origin=None)]
-        assert select_fresh(issues, {"a"}) == []
 
-    def test_mixed_batch(self):
-        issues = [
-            _issue("auto", origin="autopilot"),
-            _issue("human", origin=None),
-            _issue("seen", origin=None),
-            _issue("quick", origin="quick_create"),
-        ]
-        got = {i["id"] for i in select_fresh(issues, {"seen"})}
-        assert got == {"human", "quick"}
+def test_split_fresh_reviews_ignores_seen_ids() -> None:
+    notifiable, suppressed = _split_fresh_reviews(
+        [
+            {
+                "id": "auto-1",
+                "assignee_type": "agent",
+                "origin_type": "autopilot",
+                "origin_source": "schedule",
+            },
+            {
+                "id": "ordinary-1",
+                "assignee_type": "agent",
+            },
+        ],
+        seen={"auto-1", "ordinary-1"},
+    )
+
+    assert notifiable == []
+    assert suppressed == []
+
+
+@pytest.mark.asyncio
+async def test_first_pass_routes_existing_automated_reviews_without_discord(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    router = FakeReviewRouter()
+    worker = ReviewPollWorker(
+        cli_path="multica",
+        channel_id=1,
+        seen_path=tmp_path / "seen.json",
+        poll_interval=1,
+        app_url="",
+        review_router=router,  # type: ignore[arg-type]
+    )
+    worker._list_in_review = lambda: _async_value([automated_issue()])  # type: ignore[method-assign]
+
+    async def cancel_after_iteration(_: float) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("discord_agent_secretary.pull_worker.asyncio.sleep", cancel_after_iteration)
+
+    with pytest.raises(asyncio.CancelledError):
+        await worker.run(client=object())  # type: ignore[arg-type]
+
+    assert router.routed_issue_ids == ["auto-1"]
+    assert json.loads((tmp_path / "seen.json").read_text(encoding="utf-8")) == {
+        "seen_ids": ["auto-1"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_failed_routing_remains_retryable(tmp_path, monkeypatch) -> None:
+    router = FakeReviewRouter(fail=True)
+    worker = ReviewPollWorker(
+        cli_path="multica",
+        channel_id=1,
+        seen_path=tmp_path / "seen.json",
+        poll_interval=1,
+        app_url="",
+        review_router=router,  # type: ignore[arg-type]
+    )
+    polls = 0
+
+    async def list_in_review() -> list[dict[str, object]]:
+        nonlocal polls
+        polls += 1
+        if polls == 1:
+            return []
+        return [automated_issue()]
+
+    worker._list_in_review = list_in_review  # type: ignore[method-assign]
+    sleeps = 0
+
+    async def stop_after_retries(_: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps >= 3:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr("discord_agent_secretary.pull_worker.asyncio.sleep", stop_after_retries)
+
+    with pytest.raises(asyncio.CancelledError):
+        await worker.run(client=object())  # type: ignore[arg-type]
+
+    assert router.routed_issue_ids == ["auto-1", "auto-1"]
+
+
+async def _async_value(value: object) -> object:
+    return value

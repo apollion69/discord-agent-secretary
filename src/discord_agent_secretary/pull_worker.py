@@ -20,7 +20,21 @@ from typing import Any
 
 import discord
 
+from .review_router import AutomatedReviewRouter
+from .review_routing import classify_review_candidate
+
 logger = logging.getLogger(__name__)
+
+_TERMINAL_ROUTING_OUTCOMES = frozenset(
+    {
+        "routed",
+        "already_routed",
+        "dry_run",
+        "blocked_missing_reviewer",
+        "routing_off",
+        "routing_unconfigured",
+    }
+)
 
 
 def _load_seen(path: Path) -> set[str]:
@@ -47,22 +61,6 @@ def _strip_preamble(raw: str) -> str:
     return raw
 
 
-def select_fresh(issues: list[dict[str, Any]], seen: set[str]) -> list[dict[str, Any]]:
-    """Issues worth notifying: unseen, agent-assigned, and NOT autopilot-originated.
-
-    Autopilot (cron) issues are summarized once a day by the digest worker
-    instead of pinging per task. `origin_type` is exposed by the server issue
-    list; when absent (older server) the autopilot guard is a no-op.
-    """
-    return [
-        i
-        for i in issues
-        if i.get("id") not in seen
-        and i.get("assignee_type") == "agent"
-        and i.get("origin_type") != "autopilot"
-    ]
-
-
 def _format_message(issue: dict[str, Any], app_url: str) -> str:
     identifier = str(issue.get("identifier") or issue.get("id", "?"))
     issue_id = str(issue.get("id", ""))
@@ -72,6 +70,28 @@ def _format_message(issue: dict[str, Any], app_url: str) -> str:
         url = f"{app_url.rstrip('/')}/venchur/issues/{issue_id}"
         return f"{bell} [{identifier}](<{url}>) — «{title}» переведена агентом в review"
     return f"{bell} {identifier} — «{title}» переведена агентом в review"
+
+
+def _split_fresh_reviews(
+    issues: list[dict[str, Any]], seen: set[str]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    notifiable: list[dict[str, Any]] = []
+    suppressed_automated: list[dict[str, Any]] = []
+    for issue in issues:
+        raw_issue_id = issue.get("id")
+        if not isinstance(raw_issue_id, str) or raw_issue_id in seen:
+            continue
+
+        decision = classify_review_candidate(issue)
+        if decision.notify_discord:
+            notifiable.append(issue)
+        elif decision.is_automated_autopilot:
+            suppressed_automated.append(issue)
+    return notifiable, suppressed_automated
+
+
+def _issue_id(issue: dict[str, Any]) -> str:
+    return str(issue["id"])
 
 
 async def _send_to_channel(client: discord.Client, channel_id: int, message: str) -> None:
@@ -100,6 +120,7 @@ class ReviewPollWorker:
         seen_path: Path,
         poll_interval: float,
         app_url: str,
+        review_router: AutomatedReviewRouter | None = None,
         cli_timeout: float = 30.0,
     ) -> None:
         self._cli_path = cli_path
@@ -107,6 +128,7 @@ class ReviewPollWorker:
         self._seen_path = seen_path
         self._poll_interval = poll_interval
         self._app_url = app_url
+        self._review_router = review_router
         self._cli_timeout = cli_timeout
         self._last_poll_ok: str | None = None
 
@@ -136,6 +158,7 @@ class ReviewPollWorker:
             )
         except TimeoutError:
             proc.kill()
+            await proc.wait()
             raise
         if proc.returncode is None:
             await proc.wait()
@@ -152,6 +175,44 @@ class ReviewPollWorker:
             return [i for i in data if isinstance(i, dict)]
         return []
 
+    async def _route_suppressed_automated(self, issue: dict[str, Any]) -> bool:
+        issue_id = _issue_id(issue)
+        routing_outcome = "routing_unconfigured"
+        reviewer_ref = None
+        if self._review_router is not None:
+            try:
+                result = await self._review_router.route_issue(issue)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "review_poll_worker: suppressed automated review routing failed",
+                    extra={
+                        "identifier": issue.get("identifier"),
+                        "issue_id": issue_id,
+                        "origin_type": issue.get("origin_type"),
+                        "origin_id": issue.get("origin_id"),
+                        "origin_source": issue.get("origin_source"),
+                        "routing_outcome": "routing_failed",
+                        "detail": str(exc),
+                    },
+                )
+                return False
+            routing_outcome = result.outcome
+            reviewer_ref = result.reviewer_ref
+
+        logger.info(
+            "review_poll_worker: suppressed automated review",
+            extra={
+                "identifier": issue.get("identifier"),
+                "issue_id": issue_id,
+                "origin_type": issue.get("origin_type"),
+                "origin_id": issue.get("origin_id"),
+                "origin_source": issue.get("origin_source"),
+                "routing_outcome": routing_outcome,
+                "reviewer_ref": reviewer_ref,
+            },
+        )
+        return routing_outcome in _TERMINAL_ROUTING_OUTCOMES
+
     async def run(self, client: discord.Client) -> None:
         """Run the poll loop indefinitely. Call from an asyncio task."""
         first_pass = True
@@ -167,20 +228,36 @@ class ReviewPollWorker:
 
                 if first_pass:
                     # Seed silently: don't flood with existing in_review issues.
-                    seen = current_ids
+                    _notifiable, suppressed_automated = _split_fresh_reviews(issues, set())
+                    suppressed_ids = {_issue_id(i) for i in suppressed_automated}
+                    seen = {str(i) for i in current_ids if str(i) not in suppressed_ids}
+                    routed_count = 0
+                    for issue in suppressed_automated:
+                        issue_id = _issue_id(issue)
+                        if await self._route_suppressed_automated(issue):
+                            seen.add(issue_id)
+                            routed_count += 1
                     _save_seen(self._seen_path, seen)
                     first_pass = False
                     logger.info(
                         "review_poll_worker: init pass complete",
-                        extra={"seeded": len(seen)},
+                        extra={"seeded": len(seen), "routed_automated": routed_count},
                     )
                 else:
-                    fresh = select_fresh(issues, seen)
-                    for issue in fresh:
+                    notifiable, suppressed_automated = _split_fresh_reviews(issues, seen)
+                    seen_changed = False
+                    for issue in suppressed_automated:
+                        issue_id = _issue_id(issue)
+                        if await self._route_suppressed_automated(issue):
+                            seen.add(issue_id)
+                            seen_changed = True
+
+                    for issue in notifiable:
                         issue_id = str(issue["id"])
                         msg = _format_message(issue, self._app_url)
                         await _send_to_channel(client, self._channel_id, msg)
                         seen.add(issue_id)
+                        seen_changed = True
                         logger.info(
                             "review_poll_worker: notified",
                             extra={
@@ -188,7 +265,7 @@ class ReviewPollWorker:
                                 "issue_id": issue_id,
                             },
                         )
-                    if fresh:
+                    if seen_changed:
                         _save_seen(self._seen_path, seen)
 
                 self._last_poll_ok = datetime.now(UTC).isoformat()

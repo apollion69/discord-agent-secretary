@@ -12,6 +12,7 @@ import signal
 import sys
 import traceback
 from collections.abc import Callable
+from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from discord import app_commands
 
 from .backends import make_backend
 from .config import get_settings
+from .digest_worker import DigestWorker
 from .discord_client import (
     UnsafePermissionsError,
     assert_safe_permissions,
@@ -28,9 +30,14 @@ from .discord_client import (
 from .handlers import register_handlers
 from .health import HealthcheckHandle, start_healthcheck
 from .logging_setup import configure_logging
-from .digest_worker import DigestWorker
 from .pull_worker import ReviewPollWorker
-from .webhook import format_review_message, parse_review_event
+from .review_router import AutomatedReviewRouter, CliReviewBackend
+from .webhook import (
+    ReviewEvent,
+    format_review_message,
+    parse_review_event,
+    should_notify_discord_for_review,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +81,7 @@ class _RunState:
     poll_worker: ReviewPollWorker | None = None
     poll_task: asyncio.Task[None] | None = None
     digest_task: asyncio.Task[None] | None = None
+    review_router: AutomatedReviewRouter | None = None
 
 
 async def resolve_bot_member(
@@ -221,6 +229,66 @@ async def _send_review_notification(
         await channel.send(message)
 
 
+def _log_background_failure(
+    future: Future[None],
+    *,
+    action: str,
+    issue_id: str,
+    identifier: str,
+    origin_type: str | None = None,
+    origin_id: str | None = None,
+    origin_source: str | None = None,
+    routing_outcome: str | None = None,
+) -> None:
+    try:
+        future.result()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "%s failed",
+            action,
+            extra={
+                "issue_id": issue_id,
+                "identifier": identifier,
+                "origin_type": origin_type,
+                "origin_id": origin_id,
+                "origin_source": origin_source,
+                "routing_outcome": routing_outcome,
+                "detail": str(exc),
+            },
+        )
+
+
+def _review_log_extra(
+    event: ReviewEvent,
+    *,
+    routing_outcome: str | None = None,
+    reviewer_ref: str | None = None,
+) -> dict[str, object]:
+    return {
+        "issue_id": event.issue_id,
+        "identifier": event.identifier,
+        "origin_type": event.origin_type,
+        "origin_id": event.origin_id,
+        "origin_source": event.origin_source,
+        "routing_outcome": routing_outcome,
+        "reviewer_ref": reviewer_ref,
+    }
+
+
+def _issue_from_review_event(event: ReviewEvent) -> dict[str, object]:
+    return {
+        "id": event.issue_id,
+        "identifier": event.identifier,
+        "title": event.title,
+        "assignee_type": event.assignee_type or "agent",
+        "assignee_id": event.assignee_id,
+        "origin_type": event.origin_type,
+        "origin_id": event.origin_id,
+        "origin_source": event.origin_source,
+        "status": "in_review",
+    }
+
+
 def _make_webhook_callback(
     settings: object, client: discord.Client, state: _RunState
 ) -> Callable[[bytes, str], None] | None:
@@ -235,12 +303,64 @@ def _make_webhook_callback(
         if event is None:
             return
         loop = state.loop
+        if not should_notify_discord_for_review(event):
+            router = state.review_router
+            if router is None:
+                logger.info(
+                    "review notification suppressed",
+                    extra=_review_log_extra(event, routing_outcome="routing_unconfigured"),
+                )
+                return
+            if router is not None:
+                if loop is None:
+                    logger.warning(
+                        "review routing dropped: event loop not ready",
+                        extra=_review_log_extra(event, routing_outcome="loop_unavailable"),
+                    )
+                    return
+
+                async def _route_review() -> None:
+                    result = await router.route_issue(_issue_from_review_event(event))
+                    logger.info(
+                        "review notification suppressed",
+                        extra=_review_log_extra(
+                            event,
+                            routing_outcome=result.outcome,
+                            reviewer_ref=result.reviewer_ref,
+                        ),
+                    )
+
+                future = asyncio.run_coroutine_threadsafe(_route_review(), loop)
+                future.add_done_callback(
+                    lambda f: _log_background_failure(
+                        f,
+                        action="review routing",
+                        issue_id=event.issue_id,
+                        identifier=event.identifier,
+                        origin_type=event.origin_type,
+                        origin_id=event.origin_id,
+                        origin_source=event.origin_source,
+                        routing_outcome="routing_failed",
+                    )
+                )
+            return
         if loop is None:
             logger.warning("review notification dropped: event loop not ready")
             return
-        asyncio.run_coroutine_threadsafe(
+        future = asyncio.run_coroutine_threadsafe(
             _send_review_notification(client, channel_id, format_review_message(event)),
             loop,
+        )
+        future.add_done_callback(
+            lambda f: _log_background_failure(
+                f,
+                action="review notification",
+                issue_id=event.issue_id,
+                identifier=event.identifier,
+                origin_type=event.origin_type,
+                origin_id=event.origin_id,
+                origin_source=event.origin_source,
+            )
         )
 
     return _on_webhook
@@ -276,6 +396,30 @@ def main() -> int:
 
     state = _RunState()
 
+    review_router: AutomatedReviewRouter | None = None
+    if settings.multica_review_routing_mode != "off":
+        review_router = AutomatedReviewRouter(
+            reviewer_refs=settings.multica_automated_reviewers,
+            routing_mode=settings.multica_review_routing_mode,
+            rework_status=settings.multica_rework_status,
+            dry_run=settings.multica_review_dry_run,
+            state_path=Path(settings.multica_review_state_path),
+            backend=CliReviewBackend(
+                settings.multica_cli_path or "multica",
+                timeout=max(settings.multica_cli_timeout, 30.0),
+            ),
+        )
+        state.review_router = review_router
+        logger.info(
+            "automated review router configured",
+            extra={
+                "mode": settings.multica_review_routing_mode,
+                "dry_run": settings.multica_review_dry_run,
+                "reviewer_count": len(settings.multica_automated_reviewers),
+                "state_path": settings.multica_review_state_path,
+            },
+        )
+
     webhook_cb = _make_webhook_callback(settings, client, state)
 
     poll_worker: ReviewPollWorker | None = None
@@ -286,6 +430,7 @@ def main() -> int:
             seen_path=Path(settings.multica_seen_path),
             poll_interval=settings.multica_poll_interval,
             app_url=settings.multica_app_url,
+            review_router=review_router,
             cli_timeout=max(settings.multica_cli_timeout, 30.0),
         )
         state.poll_worker = poll_worker

@@ -253,7 +253,7 @@ def register_handlers(
         safe_title = discord.utils.escape_markdown(getattr(ref, "title", None) or title)
         identifier = ref.identifier
         if _app_url and ref.id:
-            issue_url = f"{_app_url}/venchur/issues/{ref.id}"
+            issue_url = f"{_app_url}/venchur/issues/{identifier or ref.id}"
             ref_text = f"[{identifier or ref.id}](<{issue_url}>)"
         else:
             ref_text = f"`{identifier or ref.id}`"

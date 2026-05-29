@@ -13,22 +13,23 @@ from functools import lru_cache
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
-from pydantic_settings.sources import EnvSettingsSource
+from pydantic_settings.sources import DotEnvSettingsSource, EnvSettingsSource
+
+_CSV_FIELDS = {"discord_watch_channels", "multica_automated_reviewers"}
 
 
 class _CsvFriendlyEnvSource(EnvSettingsSource):
     """EnvSettingsSource that skips JSON pre-decode for CSV-shaped env vars.
 
     `pydantic-settings` 2.1 eagerly `json.loads()` any env value whose target
-    field is "complex" (list/dict/etc). Our `discord_watch_channels` is a CSV,
+    field is "complex" (list/dict/etc). Our list settings are CSV-shaped,
     which would trip that. Passing the raw string through lets the
-    `@field_validator(mode="before")` split it.
+    `@field_validator(mode="before")` split it. Dotenv uses the same override
+    below because it has the same complex-value pre-decode behavior.
     """
-
-    _CSV_FIELDS = {"discord_watch_channels"}
 
     def prepare_field_value(
         self,
@@ -37,12 +38,26 @@ class _CsvFriendlyEnvSource(EnvSettingsSource):
         value: Any,
         value_is_complex: bool,
     ) -> Any:
-        if field_name in self._CSV_FIELDS:
+        if field_name in _CSV_FIELDS:
+            return value
+        return super().prepare_field_value(field_name, field, value, value_is_complex)
+
+
+class _CsvFriendlyDotEnvSource(DotEnvSettingsSource):
+    def prepare_field_value(
+        self,
+        field_name: str,
+        field: FieldInfo,
+        value: Any,
+        value_is_complex: bool,
+    ) -> Any:
+        if field_name in _CSV_FIELDS:
             return value
         return super().prepare_field_value(field_name, field, value, value_is_complex)
 
 
 BackendName = Literal["multica", "github", "linear", "jira"]
+ReviewRoutingMode = Literal["off", "subscribe", "assign"]
 
 
 class Settings(BaseSettings):
@@ -65,7 +80,18 @@ class Settings(BaseSettings):
         return (
             init_settings,
             _CsvFriendlyEnvSource(settings_cls),
-            dotenv_settings,
+            _CsvFriendlyDotEnvSource(
+                settings_cls,
+                env_file=getattr(dotenv_settings, "env_file", None),
+                env_file_encoding=getattr(dotenv_settings, "env_file_encoding", None),
+                case_sensitive=getattr(dotenv_settings, "case_sensitive", None),
+                env_prefix=getattr(dotenv_settings, "env_prefix", None),
+                env_nested_delimiter=getattr(dotenv_settings, "env_nested_delimiter", None),
+                env_nested_max_split=getattr(dotenv_settings, "env_nested_max_split", None),
+                env_ignore_empty=getattr(dotenv_settings, "env_ignore_empty", None),
+                env_parse_none_str=getattr(dotenv_settings, "env_parse_none_str", None),
+                env_parse_enums=getattr(dotenv_settings, "env_parse_enums", None),
+            ),
             file_secret_settings,
         )
 
@@ -167,6 +193,28 @@ class Settings(BaseSettings):
         description="Path to the dedup state file recording the last digest date.",
     )
 
+    # === Automated review routing ===
+    multica_automated_reviewers: list[str] = Field(
+        default_factory=list,
+        description="CSV list of reviewer actor refs/names used for automated task review routing.",
+    )
+    multica_review_routing_mode: ReviewRoutingMode = Field(
+        default="off",
+        description="Automated review routing mode: off, subscribe, or assign.",
+    )
+    multica_review_dry_run: bool = Field(
+        default=True,
+        description="When true, report reviewer routing actions without mutating Multica.",
+    )
+    multica_rework_status: str = Field(
+        default="todo",
+        description="Existing Multica status used when a reviewer requests rework.",
+    )
+    multica_review_state_path: str = Field(
+        default="/opt/discord-secretary/review-routing.json",
+        description="Idempotent state file for automated review routing and verdicts.",
+    )
+
 
     # === GitHub backend ===
     github_token: str = Field(default="", description="GitHub PAT or App-installation token")
@@ -209,10 +257,10 @@ class Settings(BaseSettings):
                 ) from e
         return v
 
-    @field_validator("discord_watch_channels", mode="before")
+    @field_validator("discord_watch_channels", "multica_automated_reviewers", mode="before")
     @classmethod
-    def _split_channel_list(cls, v: object) -> object:
-        """Accept int, str, or list — coerce to list[int].
+    def _split_csv_list(cls, v: object) -> object:
+        """Accept int, str, or list — coerce comma-separated env strings.
 
         pydantic-settings can hand this field a bare `int` when the env value
         parses as a JSON number. A CSV string like `"123,456"` comes in as
@@ -223,8 +271,13 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             if not v.strip():
                 return []
-            return [int(x.strip()) for x in v.split(",") if x.strip()]
+            return [x.strip() for x in v.split(",") if x.strip()]
         return v
+
+    @field_validator("discord_watch_channels")
+    @classmethod
+    def _coerce_channel_ids(cls, v: list[object]) -> list[int]:
+        return [int(str(x)) for x in v]
 
     @field_validator("multica_workspace_id")
     @classmethod
@@ -256,6 +309,20 @@ class Settings(BaseSettings):
         except ZoneInfoNotFoundError as e:
             raise ValueError(f"tz {v!r} is not a known IANA zone") from e
         return v
+
+    @model_validator(mode="after")
+    def _validate_review_routing_signature_secret(self) -> Settings:
+        if (
+            self.discord_review_channel_id is not None
+            and self.multica_review_routing_mode != "off"
+            and not self.multica_review_dry_run
+            and not self.multica_webhook_secret.strip()
+        ):
+            raise ValueError(
+                "MULTICA_WEBHOOK_SECRET is required when automated review routing "
+                "can mutate Multica from review webhooks"
+            )
+        return self
 
 
 @lru_cache(maxsize=1)
