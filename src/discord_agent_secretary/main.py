@@ -369,6 +369,18 @@ def _make_webhook_callback(
     return _on_webhook
 
 
+def _log_worker_exit(task: asyncio.Task) -> None:
+    """A background worker should run forever; an unexpected exit is critical."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.critical(
+            "background worker exited unexpectedly — no longer running",
+            extra={"task": task.get_name(), "detail": str(exc)},
+        )
+
+
 def main() -> int:
     try:
         settings = get_settings()
@@ -390,8 +402,10 @@ def main() -> int:
 
     client, tree = build_client()
     # Persistent approval buttons: register the dynamic item so clicks are routed
-    # by custom_id even after a restart (no in-memory View needed).
-    if settings.mention_scan_enabled and settings.discord_member_map:
+    # by custom_id even after a restart (no in-memory View needed). Gate only on
+    # the member map — the callback authorizes by member, and buttons posted in a
+    # prior run must keep working even if mention-scan is later toggled off.
+    if settings.discord_member_map:
         client.add_dynamic_items(ApprovalButton)
     register_handlers(
         tree,
@@ -426,6 +440,17 @@ def main() -> int:
                 "state_path": settings.multica_review_state_path,
             },
         )
+        if (
+            settings.discord_review_channel_id is not None
+            and settings.multica_review_dry_run
+            and not settings.multica_webhook_secret.strip()
+        ):
+            # Hard-required once dry_run is off (see config validator); warn while
+            # dry_run masks that gap so the secret is set before going live.
+            logger.warning(
+                "review webhook accepts UNSIGNED payloads (dry_run + no "
+                "MULTICA_WEBHOOK_SECRET) — set the secret before disabling dry_run"
+            )
 
     webhook_cb = _make_webhook_callback(settings, client, state)
 
@@ -511,16 +536,19 @@ def main() -> int:
                 poll_worker.run(client),
                 name="review-poll-worker",
             )
+            state.poll_task.add_done_callback(_log_worker_exit)
         if digest_worker is not None and state.digest_task is None:
             state.digest_task = asyncio.create_task(
                 digest_worker.run(client),
                 name="autopilot-digest-worker",
             )
+            state.digest_task.add_done_callback(_log_worker_exit)
         if mention_worker is not None and state.mention_task is None:
             state.mention_task = asyncio.create_task(
                 mention_worker.run(client),
                 name="mention-scan-worker",
             )
+            state.mention_task.add_done_callback(_log_worker_exit)
 
     try:
         asyncio.run(run_client(client, settings.discord_bot_token))

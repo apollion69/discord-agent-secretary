@@ -4,6 +4,8 @@ from __future__ import annotations
 import pytest
 
 from discord_agent_secretary.mention_scanner import (
+    _load_state,
+    _save_state,
     build_member_discord_map,
     extract_member_mentions,
     format_mention_ping,
@@ -58,3 +60,23 @@ class TestRendering:
         msg = format_mention_ping("123", "VEN-9", "uuid-9", "", "")
         assert "<@123>" in msg and "VEN-9" in msg
         assert "<http" not in msg
+
+    def test_snippet_escapes_markdown(self):
+        # comment markdown must not bleed into the Discord message
+        out = readable_snippet("**bold** and `code` and _em_")
+        assert "**" not in out
+        assert r"\*\*bold\*\*" in out
+
+
+class TestStateEviction:
+    def test_seen_eviction_keeps_most_recent_by_insertion(self, tmp_path):
+        path = tmp_path / "seen.json"
+        # 5001 ids inserted in order id-00000 .. id-05000; cap is 5000.
+        seen = {f"id-{n:05d}": None for n in range(5001)}
+        _save_state(path, seen, {"i": "t"})
+        reloaded, issue_seen = _load_state(path)
+        assert len(reloaded) == 5000
+        # the OLDEST (id-00000) is dropped, the NEWEST (id-05000) is kept
+        assert "id-00000" not in reloaded
+        assert "id-05000" in reloaded
+        assert issue_seen == {"i": "t"}

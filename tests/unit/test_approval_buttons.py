@@ -115,3 +115,149 @@ class TestApplyVerdict:
         with patch("discord_agent_secretary.approval_buttons.asyncio.create_subprocess_exec", side_effect=fake_exec):
             ok = await apply_human_verdict("multica", UUID, "done_approve", "m", "X")
         assert ok is False
+
+    async def test_done_rework_sets_todo_no_comment(self):
+        seen = []
+
+        async def fake_exec(*args, **kwargs):
+            seen.append(args)
+            return _FakeProc(0)
+
+        with patch("discord_agent_secretary.approval_buttons.asyncio.create_subprocess_exec", side_effect=fake_exec):
+            ok = await apply_human_verdict("multica", UUID, "done_rework", "m", "X")
+        assert ok is True
+        assert any("todo" in a for a in seen)
+        assert not any("comment" in a for a in seen)
+
+    async def test_env_strips_discord_secrets(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "super-secret")
+        monkeypatch.setenv("PATH", "/usr/bin")
+        captured = {}
+
+        async def fake_exec(*args, **kwargs):
+            captured.update(kwargs.get("env", {}))
+            return _FakeProc(0)
+
+        with patch("discord_agent_secretary.approval_buttons.asyncio.create_subprocess_exec", side_effect=fake_exec):
+            await apply_human_verdict("multica", UUID, "done_approve", "m-uuid", "X")
+        assert "DISCORD_BOT_TOKEN" not in captured
+        assert captured.get("MULTICA_ON_BEHALF_OF") == "m-uuid"
+
+    async def test_start_comment_failure_still_succeeds(self):
+        # status change ok, signal comment fails -> degraded but True (status moved)
+        rcs = iter([0, 2])
+
+        async def fake_exec(*args, **kwargs):
+            return _FakeProc(next(rcs))
+
+        with patch("discord_agent_secretary.approval_buttons.asyncio.create_subprocess_exec", side_effect=fake_exec):
+            ok = await apply_human_verdict("multica", UUID, "start_go", "m", "X")
+        assert ok is True
+
+    async def test_timeout_returns_failure(self):
+        import asyncio as _aio
+
+        class _HangProc:
+            returncode = None
+
+            async def communicate(self):
+                await _aio.sleep(10)
+                return b"", b""
+
+            def kill(self):
+                self.returncode = -9
+
+            async def wait(self):
+                return self.returncode
+
+        async def fake_exec(*args, **kwargs):
+            return _HangProc()
+
+        with patch("discord_agent_secretary.approval_buttons.asyncio.create_subprocess_exec", side_effect=fake_exec):
+            ok = await apply_human_verdict("multica", UUID, "done_approve", "m", "X", cli_timeout=0.01)
+        assert ok is False
+
+
+class _FakeResponse:
+    def __init__(self):
+        self.deferred = False
+        self.ephemeral_msgs = []
+
+    async def defer(self):
+        self.deferred = True
+
+    async def send_message(self, content, ephemeral=False):
+        self.ephemeral_msgs.append((content, ephemeral))
+
+
+class _FakeFollowup:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, content, ephemeral=False):
+        self.sent.append((content, ephemeral))
+
+
+class _FakeUser:
+    def __init__(self, uid):
+        self.id = uid
+        self.name = "tester"
+        self.display_name = "Tester"
+
+
+class _FakeMessage:
+    content = "request body"
+
+
+class _FakeInteraction:
+    def __init__(self, uid):
+        self.user = _FakeUser(uid)
+        self.response = _FakeResponse()
+        self.followup = _FakeFollowup()
+        self.message = _FakeMessage()
+        self.edited = None
+
+    async def edit_original_response(self, content, view=None):
+        self.edited = content
+
+
+class _Settings:
+    def __init__(self, member_map):
+        self.discord_member_map = member_map
+        self.multica_cli_path = "multica"
+        self.multica_cli_timeout = 30.0
+
+
+class TestCallback:
+    async def test_non_member_denied_no_defer(self):
+        btn = ApprovalButton("start_go", UUID)
+        inter = _FakeInteraction(uid="999")
+        with patch("discord_agent_secretary.approval_buttons.get_settings", return_value=_Settings({})):
+            await btn.callback(inter)
+        assert inter.response.ephemeral_msgs  # got denial
+        assert inter.response.deferred is False
+        assert inter.edited is None
+
+    async def test_member_success_edits_message(self):
+        btn = ApprovalButton("start_go", UUID)
+        inter = _FakeInteraction(uid="42")
+        with (
+            patch("discord_agent_secretary.approval_buttons.get_settings", return_value=_Settings({"42": "m-uuid"})),
+            patch("discord_agent_secretary.approval_buttons.apply_human_verdict", return_value=True) as verdict,
+        ):
+            await btn.callback(inter)
+        assert inter.response.deferred is True
+        assert verdict.await_args.args[2] == "start_go"
+        assert "Старт разрешён" in inter.edited
+
+    async def test_member_failure_followup_ephemeral(self):
+        btn = ApprovalButton("done_approve", UUID)
+        inter = _FakeInteraction(uid="42")
+        with (
+            patch("discord_agent_secretary.approval_buttons.get_settings", return_value=_Settings({"42": "m-uuid"})),
+            patch("discord_agent_secretary.approval_buttons.apply_human_verdict", return_value=False),
+        ):
+            await btn.callback(inter)
+        assert inter.response.deferred is True
+        assert inter.followup.sent and inter.followup.sent[0][1] is True
+        assert inter.edited is None

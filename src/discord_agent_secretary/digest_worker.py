@@ -157,16 +157,20 @@ class DigestWorker:
         ]
         return format_digest(in_review, done_recent, self._app_url)
 
-    async def _post(self, client: discord.Client, message: str) -> None:
+    async def _post(self, client: discord.Client, message: str) -> bool:
+        """Return True only if the digest was actually delivered."""
         channel = client.get_channel(self._channel_id)
         if channel is None:
             try:
                 channel = await client.fetch_channel(self._channel_id)
             except discord.HTTPException as exc:
                 logger.warning("digest channel unavailable", extra={"detail": str(exc)})
-                return
-        if isinstance(channel, discord.abc.Messageable):
-            await channel.send(message)
+                return False
+        if not isinstance(channel, discord.abc.Messageable):
+            logger.warning("digest channel not messageable", extra={"channel_id": self._channel_id})
+            return False
+        await channel.send(message)
+        return True
 
     def _due(self, now: datetime, last: str | None) -> bool:
         return now.hour >= self._hour and last != now.date().isoformat()
@@ -186,13 +190,17 @@ class DigestWorker:
                 now = self._now()
                 if self._due(now, last):
                     message = await self.build()
-                    if message is not None:
-                        await self._post(client, message)
-                        logger.info("digest_worker: posted", extra={"date": now.date().isoformat()})
-                    else:
-                        logger.info("digest_worker: nothing to report", extra={"date": now.date().isoformat()})
-                    last = now.date().isoformat()
-                    _save_last_date(self._state_path, last)
+                    today = now.date().isoformat()
+                    if message is None:
+                        logger.info("digest_worker: nothing to report", extra={"date": today})
+                        last = today
+                        _save_last_date(self._state_path, last)
+                    elif await self._post(client, message):
+                        logger.info("digest_worker: posted", extra={"date": today})
+                        last = today
+                        _save_last_date(self._state_path, last)
+                    # else: delivery failed — leave `last` unchanged so the next
+                    # hourly tick retries instead of silently skipping the day.
                 sleep_s = self._sleep_seconds(self._now())
             except asyncio.CancelledError:
                 logger.info("digest_worker: cancelled")

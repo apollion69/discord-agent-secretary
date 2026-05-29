@@ -35,6 +35,10 @@ _MEMBER_MENTION_RE = re.compile(r"\[@?[^\]]*\]\(mention://member/([0-9a-fA-F-]+)
 _ANY_MENTION_RE = re.compile(r"\[(@?[^\]]*)\]\(mention://[^)]+\)")
 _SNIPPET_CAP = 140
 
+# Only the user we explicitly ping may be mentioned — comment text (agent- or
+# human-authored) can't make the bot ping @everyone/@here or a role.
+_ALLOWED_MENTIONS = discord.AllowedMentions(everyone=False, roles=False, users=True)
+
 
 def extract_member_mentions(content: str) -> set[str]:
     return set(_MEMBER_MENTION_RE.findall(content or ""))
@@ -55,6 +59,8 @@ def build_member_discord_map(
 
 def readable_snippet(content: str) -> str:
     text = _ANY_MENTION_RE.sub(r"\1", content or "").strip().replace("\n", " ")
+    # Neutralize markdown so comment text can't inject formatting into Discord.
+    text = discord.utils.escape_markdown(text)
     return text[:_SNIPPET_CAP] + ("…" if len(text) > _SNIPPET_CAP else "")
 
 
@@ -70,19 +76,22 @@ def format_mention_ping(
     return f"\U0001f4ac <@{discord_id}>, тебя упомянули в {ref}{tail}"
 
 
-def _load_state(path: Path) -> tuple[set[str], dict[str, str]]:
+# seen-comments is an insertion-ordered set (dict keys) so the bound below
+# evicts the OLDEST ids — a plain set + sorted() would evict by arbitrary UUID
+# order and could drop recent ids, re-pinging their comments.
+def _load_state(path: Path) -> tuple[dict[str, None], dict[str, str]]:
     try:
         d = json.loads(path.read_text(encoding="utf-8"))
-        return set(d.get("seen_comments", [])), dict(d.get("issue_seen", {}))
+        return dict.fromkeys(d.get("seen_comments", [])), dict(d.get("issue_seen", {}))
     except (FileNotFoundError, json.JSONDecodeError, AttributeError):
-        return set(), {}
+        return {}, {}
 
 
-def _save_state(path: Path, seen: set[str], issue_seen: dict[str, str]) -> None:
+def _save_state(path: Path, seen: dict[str, None], issue_seen: dict[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    # Cap the seen-set so the file can't grow without bound.
-    seen_list = sorted(seen)[-5000:]
+    # Cap the seen-set (keep the most recent 5000) so the file can't grow unbounded.
+    seen_list = list(seen)[-5000:]
     tmp.write_text(json.dumps({"seen_comments": seen_list, "issue_seen": issue_seen}), encoding="utf-8")
     tmp.replace(path)
 
@@ -159,7 +168,10 @@ class MentionScanWorker:
                 logger.warning("mention channel unavailable", extra={"detail": str(exc)})
                 return
         if isinstance(channel, discord.abc.Messageable):
-            await channel.send(message, view=view) if view is not None else await channel.send(message)
+            if view is not None:
+                await channel.send(message, view=view, allowed_mentions=_ALLOWED_MENTIONS)
+            else:
+                await channel.send(message, allowed_mentions=_ALLOWED_MENTIONS)
 
     async def run(self, client: discord.Client) -> None:
         seen, issue_seen = _load_state(self._state_path)
@@ -183,7 +195,7 @@ class MentionScanWorker:
                         cid = str(c.get("id") or "")
                         if not cid or cid in seen:
                             continue
-                        seen.add(cid)
+                        seen[cid] = None
                         if first_pass:
                             continue  # seed silently
                         content = c.get("content") or ""

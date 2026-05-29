@@ -72,19 +72,33 @@ def strip_marker(content: str) -> str:
 
 
 async def apply_human_verdict(
-    cli_path: str, issue_id: str, action: str, member_uuid: str, member_name: str = ""
+    cli_path: str,
+    issue_id: str,
+    action: str,
+    member_uuid: str,
+    member_name: str = "",
+    *,
+    cli_timeout: float = 30.0,
 ) -> bool:
     """Apply the verdict as the member (act-as-member). Returns True on success."""
     spec = _ACTIONS.get(action)
     if spec is None:
         return False
-    env = {**os.environ, "MULTICA_ON_BEHALF_OF": member_uuid}
+    # Don't leak the bot token (or any DISCORD_* secret) into the CLI subprocess.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("DISCORD_")}
+    env["MULTICA_ON_BEHALF_OF"] = member_uuid
 
     async def _cli(*args: str) -> int:
         proc = await asyncio.create_subprocess_exec(
             cli_path, *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env
         )
-        _out, err = await proc.communicate()
+        try:
+            _out, err = await asyncio.wait_for(proc.communicate(), timeout=cli_timeout)
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            logger.warning("approval CLI timed out", extra={"issue_id": issue_id, "action": action})
+            return 1
         if proc.returncode != 0:
             logger.warning("approval CLI failed", extra={"issue_id": issue_id, "action": action, "detail": err.decode("utf-8", "replace")[:200]})
         return proc.returncode or 0
@@ -94,7 +108,13 @@ async def apply_human_verdict(
     marker = spec["comment"]
     if marker:
         # Machine-readable signal the waiting agent polls; attributed to the human.
-        await _cli("issue", "comment", "add", issue_id, "--content", f"{marker} by {member_name}".strip())
+        # The status already changed — if the signal comment fails, surface it
+        # loudly (the agent won't see the approval) but don't undo the transition.
+        if await _cli("issue", "comment", "add", issue_id, "--content", f"{marker} by {member_name}".strip()) != 0:
+            logger.warning(
+                "approval status changed but signal comment failed — waiting agent may not see it",
+                extra={"issue_id": issue_id, "action": action, "marker": marker},
+            )
     return True
 
 
@@ -129,18 +149,23 @@ class ApprovalButton(
                 "Эта кнопка доступна только участникам воркспейса.", ephemeral=True
             )
             return
+        # Ack within Discord's 3s window before shelling out to the CLI.
+        await interaction.response.defer()
         who = getattr(interaction.user, "display_name", None) or interaction.user.name
         cli_path = settings.multica_cli_path or "multica"
-        ok = await apply_human_verdict(cli_path, self.issue_id, self.action, member_uuid, who)
+        ok = await apply_human_verdict(
+            cli_path, self.issue_id, self.action, member_uuid, who,
+            cli_timeout=max(settings.multica_cli_timeout, 30.0),
+        )
         if not ok:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Не удалось применить — задача могла уже измениться. Открой её в Multica.",
                 ephemeral=True,
             )
             return
         outcome = str(_ACTIONS[self.action]["outcome"])
         base = interaction.message.content if interaction.message else ""
-        await interaction.response.edit_message(content=f"{base}\n\n{outcome} — {who}", view=None)
+        await interaction.edit_original_response(content=f"{base}\n\n{outcome} — {who}", view=None)
         logger.info("approval applied", extra={"issue_id": self.issue_id, "action": self.action, "by": str(interaction.user.id)})
 
 

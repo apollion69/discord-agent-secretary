@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import discord
 import pytest
 
 from discord_agent_secretary.digest_worker import (
@@ -65,6 +66,42 @@ class TestSchedule:
         now = datetime(2026, 5, 29, 0, 0, tzinfo=ZoneInfo("Europe/Moscow"))
         w = self._worker(tmp_path, now)
         assert w._sleep_seconds(now) == 3600.0
+
+
+class _FakeChannel(discord.abc.Messageable):
+    def __init__(self):
+        self.sent = []
+
+    async def _get_channel(self):
+        return self
+
+    async def send(self, message):
+        self.sent.append(message)
+
+
+class _FakeClient:
+    def __init__(self, channel):
+        self._channel = channel
+
+    def get_channel(self, _cid):
+        return self._channel
+
+
+class TestPost:
+    def _worker(self, tmp):
+        return DigestWorker(
+            cli_path="multica", channel_id=1, app_url=APP, tz="Europe/Moscow",
+            digest_hour=9, state_path=tmp / "d.json",
+        )
+
+    async def test_post_returns_true_on_send(self, tmp_path):
+        ch = _FakeChannel()
+        ok = await self._worker(tmp_path)._post(_FakeClient(ch), "hi")
+        assert ok is True and ch.sent == ["hi"]
+
+    async def test_post_returns_false_when_not_messageable(self, tmp_path):
+        ok = await self._worker(tmp_path)._post(_FakeClient(object()), "hi")
+        assert ok is False
 
 
 class TestBuild:
