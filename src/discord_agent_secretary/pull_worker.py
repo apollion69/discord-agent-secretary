@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +45,22 @@ def _strip_preamble(raw: str) -> str:
         if line.lstrip().startswith(("{", "[")):
             return "\n".join(lines[i:])
     return raw
+
+
+def select_fresh(issues: list[dict[str, Any]], seen: set[str]) -> list[dict[str, Any]]:
+    """Issues worth notifying: unseen, agent-assigned, and NOT autopilot-originated.
+
+    Autopilot (cron) issues are summarized once a day by the digest worker
+    instead of pinging per task. `origin_type` is exposed by the server issue
+    list; when absent (older server) the autopilot guard is a no-op.
+    """
+    return [
+        i
+        for i in issues
+        if i.get("id") not in seen
+        and i.get("assignee_type") == "agent"
+        and i.get("origin_type") != "autopilot"
+    ]
 
 
 def _format_message(issue: dict[str, Any], app_url: str) -> str:
@@ -159,12 +175,7 @@ class ReviewPollWorker:
                         extra={"seeded": len(seen)},
                     )
                 else:
-                    fresh = [
-                        i
-                        for i in issues
-                        if i.get("id") not in seen
-                        and i.get("assignee_type") == "agent"
-                    ]
+                    fresh = select_fresh(issues, seen)
                     for issue in fresh:
                         issue_id = str(issue["id"])
                         msg = _format_message(issue, self._app_url)
@@ -180,7 +191,7 @@ class ReviewPollWorker:
                     if fresh:
                         _save_seen(self._seen_path, seen)
 
-                self._last_poll_ok = datetime.now(timezone.utc).isoformat()
+                self._last_poll_ok = datetime.now(UTC).isoformat()
 
             except asyncio.CancelledError:
                 logger.info("review_poll_worker: cancelled")

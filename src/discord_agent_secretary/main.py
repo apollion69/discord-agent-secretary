@@ -28,6 +28,7 @@ from .discord_client import (
 from .handlers import register_handlers
 from .health import HealthcheckHandle, start_healthcheck
 from .logging_setup import configure_logging
+from .digest_worker import DigestWorker
 from .pull_worker import ReviewPollWorker
 from .webhook import format_review_message, parse_review_event
 
@@ -72,6 +73,7 @@ class _RunState:
     loop: asyncio.AbstractEventLoop | None = None
     poll_worker: ReviewPollWorker | None = None
     poll_task: asyncio.Task[None] | None = None
+    digest_task: asyncio.Task[None] | None = None
 
 
 async def resolve_bot_member(
@@ -296,6 +298,22 @@ def main() -> int:
             },
         )
 
+    digest_worker: DigestWorker | None = None
+    if settings.discord_review_channel_id and settings.digest_enabled:
+        digest_worker = DigestWorker(
+            cli_path=settings.multica_cli_path or "multica",
+            channel_id=settings.discord_review_channel_id,
+            app_url=settings.multica_app_url,
+            tz=settings.tz,
+            digest_hour=settings.digest_hour,
+            state_path=Path(settings.digest_state_path),
+            cli_timeout=max(settings.multica_cli_timeout, 30.0),
+        )
+        logger.info(
+            "autopilot digest configured",
+            extra={"channel_id": settings.discord_review_channel_id, "hour": settings.digest_hour},
+        )
+
     health_handle = start_healthcheck(
         settings.healthcheck_port,
         is_ready=client.is_ready,
@@ -323,6 +341,11 @@ def main() -> int:
             state.poll_task = asyncio.create_task(
                 poll_worker.run(client),
                 name="review-poll-worker",
+            )
+        if digest_worker is not None and state.digest_task is None:
+            state.digest_task = asyncio.create_task(
+                digest_worker.run(client),
+                name="autopilot-digest-worker",
             )
 
     try:

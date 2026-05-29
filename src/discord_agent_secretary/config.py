@@ -151,6 +151,22 @@ class Settings(BaseSettings):
         description="Base URL of the Multica web UI for issue links in Discord messages (e.g. http://ansible-lx1.mgmt.local:3000).",
     )
 
+    # === Autopilot digest ===
+    digest_enabled: bool = Field(
+        default=True,
+        description="Post a once-daily summary of autopilot (cron) issues instead of per-task review pings.",
+    )
+    digest_hour: int = Field(
+        default=9,
+        ge=0,
+        le=23,
+        description="Local hour (in TZ) at which the daily autopilot digest is posted.",
+    )
+    digest_state_path: str = Field(
+        default="/opt/discord-secretary/digest_state.json",
+        description="Path to the dedup state file recording the last digest date.",
+    )
+
 
     # === GitHub backend ===
     github_token: str = Field(default="", description="GitHub PAT or App-installation token")

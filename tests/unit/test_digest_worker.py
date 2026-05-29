@@ -1,0 +1,97 @@
+"""Unit tests for the daily autopilot digest worker."""
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from discord_agent_secretary.digest_worker import (
+    DigestWorker,
+    format_digest,
+)
+
+pytestmark = pytest.mark.unit
+
+APP = "http://m.local:3000"
+
+
+def _iss(ident, **kw):
+    return {"id": ident.lower(), "identifier": ident, **kw}
+
+
+class TestFormatDigest:
+    def test_none_when_empty(self):
+        assert format_digest([], [], APP) is None
+
+    def test_counts_and_links(self):
+        msg = format_digest([_iss("VEN-1")], [_iss("VEN-2"), _iss("VEN-3")], APP)
+        assert "В review: 1" in msg
+        assert "Выполнено за 24ч: 2" in msg
+        assert "[VEN-1](<http://m.local:3000/venchur/issues/ven-1>)" in msg
+        assert "отключены" in msg
+
+    def test_truncates_long_bucket(self):
+        many = [_iss(f"VEN-{n}") for n in range(12)]
+        msg = format_digest(many, [], APP)
+        assert "В review: 12" in msg
+        assert "+4 ещё" in msg
+
+
+class TestSchedule:
+    def _worker(self, tmp: Path, now: datetime, hour=9):
+        return DigestWorker(
+            cli_path="multica", channel_id=1, app_url=APP, tz="Europe/Moscow",
+            digest_hour=hour, state_path=tmp / "d.json", now_fn=lambda: now,
+        )
+
+    def test_due_after_hour_when_not_posted_today(self, tmp_path):
+        now = datetime(2026, 5, 29, 9, 30, tzinfo=ZoneInfo("Europe/Moscow"))
+        w = self._worker(tmp_path, now)
+        assert w._due(now, None) is True
+
+    def test_not_due_before_hour(self, tmp_path):
+        now = datetime(2026, 5, 29, 8, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+        w = self._worker(tmp_path, now)
+        assert w._due(now, None) is False
+
+    def test_not_due_if_already_posted_today(self, tmp_path):
+        now = datetime(2026, 5, 29, 9, 30, tzinfo=ZoneInfo("Europe/Moscow"))
+        w = self._worker(tmp_path, now)
+        assert w._due(now, "2026-05-29") is False
+
+    def test_sleep_capped_at_one_hour(self, tmp_path):
+        now = datetime(2026, 5, 29, 0, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+        w = self._worker(tmp_path, now)
+        assert w._sleep_seconds(now) == 3600.0
+
+
+class TestBuild:
+    async def test_build_filters_autopilot_and_window(self, tmp_path, monkeypatch):
+        recent = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+        old = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
+        lists = {
+            "in_review": [
+                _iss("VEN-A", origin_type="autopilot"),
+                _iss("VEN-B", origin_type=None),  # human, excluded
+            ],
+            "done": [
+                _iss("VEN-C", origin_type="autopilot", updated_at=recent),
+                _iss("VEN-D", origin_type="autopilot", updated_at=old),  # too old
+            ],
+        }
+        w = DigestWorker(
+            cli_path="multica", channel_id=1, app_url=APP, tz="Europe/Moscow",
+            digest_hour=9, state_path=tmp_path / "d.json",
+        )
+
+        async def fake_list(status):
+            return lists[status]
+
+        monkeypatch.setattr(w, "_list", fake_list)
+        msg = await w.build()
+        assert "В review: 1" in msg  # only VEN-A
+        assert "Выполнено за 24ч: 1" in msg  # only VEN-C
+        assert "VEN-A" in msg and "VEN-C" in msg
+        assert "VEN-B" not in msg and "VEN-D" not in msg
