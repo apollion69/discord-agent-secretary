@@ -9,6 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from ._cli import run_cli_json
 from .config import get_settings
 from .review_router import AutomatedReviewRouter, CliReviewBackend
 
@@ -21,36 +22,8 @@ class ReviewActionRouter(Protocol):
     async def request_rework(self, issue_id: str, *, reviewer_ref: str, comment: str) -> Any: ...
 
 
-def _strip_preamble(raw: str) -> str:
-    lines = raw.splitlines()
-    for index, line in enumerate(lines):
-        if line.lstrip().startswith(("{", "[")):
-            return "\n".join(lines[index:])
-    return raw
-
-
 async def _run_cli_json(cli_path: str, cli_timeout: float, *args: str) -> Any:
-    proc = await asyncio.create_subprocess_exec(
-        cli_path,
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    assert proc.stdout is not None and proc.stderr is not None
-    try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=cli_timeout)
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise
-    if proc.returncode != 0:
-        detail = stderr.decode("utf-8", errors="replace").strip()[:500]
-        output = stdout.decode("utf-8", errors="replace").strip()[:200]
-        raise RuntimeError(f"multica exit {proc.returncode}: {detail or output}")
-    text = _strip_preamble(stdout.decode("utf-8", errors="replace")).strip()
-    if not text:
-        return None
-    return json.loads(text)
+    return await run_cli_json(cli_path, *args, cli_timeout=cli_timeout)
 
 
 async def _load_issue(cli_path: str, cli_timeout: float, issue_ref: str) -> dict[str, object]:

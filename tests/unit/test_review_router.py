@@ -382,3 +382,28 @@ async def test_cli_backend_subscribes_named_refs_by_name(monkeypatch: pytest.Mon
             "json",
         )
     ]
+
+
+def test_select_reviewer_round_robin(tmp_path) -> None:
+    router = AutomatedReviewRouter(
+        reviewer_refs=["a", "b", "c"],
+        routing_mode="subscribe",
+        rework_status="todo",
+        dry_run=True,
+        state_path=tmp_path / "routing.json",
+        backend=FakeReviewBackend(),
+    )
+    picks = [router._select_reviewer() for _ in range(4)]
+    assert picks == ["a", "b", "c", "a"]
+
+
+def test_select_reviewer_empty_is_none(tmp_path) -> None:
+    router = AutomatedReviewRouter(
+        reviewer_refs=[],
+        routing_mode="subscribe",
+        rework_status="todo",
+        dry_run=True,
+        state_path=tmp_path / "routing.json",
+        backend=FakeReviewBackend(),
+    )
+    assert router._select_reviewer() is None

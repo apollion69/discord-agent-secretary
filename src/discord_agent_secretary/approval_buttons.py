@@ -23,6 +23,7 @@ import asyncio
 import logging
 import os
 import re
+from typing import TypedDict
 
 import discord
 
@@ -33,8 +34,20 @@ logger = logging.getLogger(__name__)
 # [approval-request] / [approval-request:start] / [approval-request:done]
 _MARKER_RE = re.compile(r"\[approval-request(?::(start|done))?\]", re.IGNORECASE)
 
-# action -> (target status, optional comment marker the agent can poll, button label, style, outcome text)
-_ACTIONS: dict[str, dict[str, object]] = {
+# Sentinel returncode meaning "the CLI call timed out" (distinct from real exit codes).
+_TIMEOUT_RC = -1
+
+
+class _Action(TypedDict):
+    status: str  # target issue status
+    comment: str | None  # optional machine-readable marker the agent can poll
+    label: str  # Discord button label
+    emoji: str
+    ok: bool  # True → success/green button, False → danger/red
+    outcome: str  # message text after the click
+
+
+_ACTIONS: dict[str, _Action] = {
     "start_go": {
         "status": "in_progress", "comment": "[start-approved]",
         "label": "Разрешить начать", "emoji": "🟢", "ok": True,
@@ -58,6 +71,13 @@ _ACTIONS: dict[str, dict[str, object]] = {
 }
 _TYPE_ACTIONS = {"start": ("start_go", "start_decline"), "done": ("done_approve", "done_rework")}
 
+# Cause-specific ephemeral shown when a click can't be applied.
+_FAILURE_MESSAGES = {
+    "timeout": "Multica не ответил вовремя — попробуй ещё раз через минуту.",
+    "failed": "Не удалось применить — задача могла уже измениться. Открой её в Multica.",
+    "unknown_action": "Не удалось применить — открой задачу в Multica.",
+}
+
 
 def parse_approval_type(content: str) -> str | None:
     """Return 'start', 'done', or None. A bare [approval-request] means 'done'."""
@@ -79,11 +99,16 @@ async def apply_human_verdict(
     member_name: str = "",
     *,
     cli_timeout: float = 30.0,
-) -> bool:
-    """Apply the verdict as the member (act-as-member). Returns True on success."""
+) -> str:
+    """Apply the verdict as the member (act-as-member).
+
+    Returns a reason code: 'ok', 'timeout', 'failed', or 'unknown_action'.
+    The signal-comment failing after the status moved is logged but still 'ok'
+    (the transition succeeded — only the agent's poll signal is degraded).
+    """
     spec = _ACTIONS.get(action)
     if spec is None:
-        return False
+        return "unknown_action"
     # Don't leak the bot token (or any DISCORD_* secret) into the CLI subprocess.
     env = {k: v for k, v in os.environ.items() if not k.startswith("DISCORD_")}
     env["MULTICA_ON_BEHALF_OF"] = member_uuid
@@ -98,13 +123,16 @@ async def apply_human_verdict(
             proc.kill()
             await proc.wait()
             logger.warning("approval CLI timed out", extra={"issue_id": issue_id, "action": action})
-            return 1
+            return _TIMEOUT_RC
         if proc.returncode != 0:
             logger.warning("approval CLI failed", extra={"issue_id": issue_id, "action": action, "detail": err.decode("utf-8", "replace")[:200]})
         return proc.returncode or 0
 
-    if await _cli("issue", "status", issue_id, str(spec["status"]), "--output", "json") != 0:
-        return False
+    status_rc = await _cli("issue", "status", issue_id, spec["status"], "--output", "json")
+    if status_rc == _TIMEOUT_RC:
+        return "timeout"
+    if status_rc != 0:
+        return "failed"
     marker = spec["comment"]
     if marker:
         # Machine-readable signal the waiting agent polls; attributed to the human.
@@ -115,7 +143,7 @@ async def apply_human_verdict(
                 "approval status changed but signal comment failed — waiting agent may not see it",
                 extra={"issue_id": issue_id, "action": action, "marker": marker},
             )
-    return True
+    return "ok"
 
 
 class ApprovalButton(
@@ -130,9 +158,9 @@ class ApprovalButton(
         spec = _ACTIONS[action]
         super().__init__(
             discord.ui.Button(
-                label=str(spec["label"]),
+                label=spec["label"],
                 style=discord.ButtonStyle.success if spec["ok"] else discord.ButtonStyle.danger,
-                emoji=str(spec["emoji"]),
+                emoji=spec["emoji"],
                 custom_id=f"appr:{action}:{issue_id}",
             )
         )
@@ -153,17 +181,14 @@ class ApprovalButton(
         await interaction.response.defer()
         who = getattr(interaction.user, "display_name", None) or interaction.user.name
         cli_path = settings.multica_cli_path or "multica"
-        ok = await apply_human_verdict(
+        result = await apply_human_verdict(
             cli_path, self.issue_id, self.action, member_uuid, who,
             cli_timeout=max(settings.multica_cli_timeout, 30.0),
         )
-        if not ok:
-            await interaction.followup.send(
-                "Не удалось применить — задача могла уже измениться. Открой её в Multica.",
-                ephemeral=True,
-            )
+        if result != "ok":
+            await interaction.followup.send(_FAILURE_MESSAGES.get(result, _FAILURE_MESSAGES["failed"]), ephemeral=True)
             return
-        outcome = str(_ACTIONS[self.action]["outcome"])
+        outcome = _ACTIONS[self.action]["outcome"]
         base = interaction.message.content if interaction.message else ""
         await interaction.edit_original_response(content=f"{base}\n\n{outcome} — {who}", view=None)
         logger.info("approval applied", extra={"issue_id": self.issue_id, "action": self.action, "by": str(interaction.user.id)})

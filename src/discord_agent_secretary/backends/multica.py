@@ -19,6 +19,7 @@ import logging
 import os
 from typing import Any, Final
 
+from .._cli import strip_preamble as _strip_preamble
 from .base import (
     BackendCallError,
     BackendParseError,
@@ -56,15 +57,6 @@ _DEFAULT_TIMEOUT: Final = 8.0
 _DEFAULT_OUTPUT_LIMIT: Final = 10 * 1024 * 1024  # 10 MiB
 _REAP_TIMEOUT: Final = 2.0
 _STDERR_LOG_CAP: Final = 300  # chars; prevents 10 MiB CLI errors flooding logs
-
-
-def _strip_preamble(raw: str) -> str:
-    """Drop leading non-JSON lines (e.g. 'Showing 5 of 12 items.')."""
-    lines = raw.splitlines()
-    for i, line in enumerate(lines):
-        if line.lstrip().startswith(("{", "[")):
-            return "\n".join(lines[i:])
-    return raw
 
 
 def _parse_json_output(raw: bytes) -> Any:

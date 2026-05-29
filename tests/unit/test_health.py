@@ -148,3 +148,49 @@ class TestStartHealthcheck:
             "healthcheck server crashed" in r.message
             for r in caplog.records
         )
+
+
+def _free_port() -> int:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _post(url: str, body: bytes = b"{}") -> int:
+    req = urllib.request.Request(url, data=body, method="POST")  # noqa: S310
+    try:
+        with urllib.request.urlopen(req, timeout=2.0) as resp:  # noqa: S310
+            return resp.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+class TestLivenessAndRateLimit:
+    def test_readyz_reports_worker_liveness(self) -> None:
+        port = _free_port()
+        handle = start_healthcheck(
+            port=port, is_ready=lambda: True, bind="127.0.0.1",
+            liveness=lambda: {"review-poll": "2026-05-29T00:00:00+00:00"},
+        )
+        try:
+            status, body = _get(f"http://127.0.0.1:{port}/readyz")
+            assert status == 200
+            assert "worker=review-poll last_ok=2026-05-29T00:00:00+00:00" in body
+        finally:
+            assert handle is not None
+            handle.shutdown()
+
+    def test_webhook_rate_limited(self) -> None:
+        port = _free_port()
+        handle = start_healthcheck(
+            port=port, is_ready=lambda: True, bind="127.0.0.1",
+            webhook_callback=lambda b, s: None, rate_limit=1,
+        )
+        try:
+            base = f"http://127.0.0.1:{port}/hooks/multica"
+            assert _post(base) == 200
+            assert _post(base) == 429  # second within the window is rejected
+        finally:
+            assert handle is not None
+            handle.shutdown()

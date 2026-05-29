@@ -74,7 +74,7 @@ class TestApplyVerdict:
 
         with patch("discord_agent_secretary.approval_buttons.asyncio.create_subprocess_exec", side_effect=fake_exec):
             ok = await apply_human_verdict("multica", UUID, "start_go", "m-uuid", "Egor")
-        assert ok is True
+        assert ok == "ok"
         # two CLI calls: status in_progress, then the [start-approved] comment
         assert any("in_progress" in a for a, _ in calls)
         assert any("comment" in a and any("[start-approved]" in str(x) for x in a) for a, _ in calls)
@@ -89,7 +89,7 @@ class TestApplyVerdict:
 
         with patch("discord_agent_secretary.approval_buttons.asyncio.create_subprocess_exec", side_effect=fake_exec):
             ok = await apply_human_verdict("multica", UUID, "start_decline", "m", "X")
-        assert ok is True
+        assert ok == "ok"
         assert any("blocked" in a for a in seen)
 
     async def test_done_approve_sets_done_no_comment(self):
@@ -101,20 +101,20 @@ class TestApplyVerdict:
 
         with patch("discord_agent_secretary.approval_buttons.asyncio.create_subprocess_exec", side_effect=fake_exec):
             ok = await apply_human_verdict("multica", UUID, "done_approve", "m", "X")
-        assert ok is True
+        assert ok == "ok"
         assert any("done" in a for a in seen)
         assert not any("comment" in a for a in seen)
 
     async def test_unknown_action_rejected(self):
-        assert await apply_human_verdict("multica", UUID, "nope", "m", "X") is False
+        assert await apply_human_verdict("multica", UUID, "nope", "m", "X") == "unknown_action"
 
-    async def test_status_failure_returns_false(self):
+    async def test_status_failure_returns_failed(self):
         async def fake_exec(*args, **kwargs):
             return _FakeProc(2)
 
         with patch("discord_agent_secretary.approval_buttons.asyncio.create_subprocess_exec", side_effect=fake_exec):
             ok = await apply_human_verdict("multica", UUID, "done_approve", "m", "X")
-        assert ok is False
+        assert ok == "failed"
 
     async def test_done_rework_sets_todo_no_comment(self):
         seen = []
@@ -125,7 +125,7 @@ class TestApplyVerdict:
 
         with patch("discord_agent_secretary.approval_buttons.asyncio.create_subprocess_exec", side_effect=fake_exec):
             ok = await apply_human_verdict("multica", UUID, "done_rework", "m", "X")
-        assert ok is True
+        assert ok == "ok"
         assert any("todo" in a for a in seen)
         assert not any("comment" in a for a in seen)
 
@@ -144,7 +144,7 @@ class TestApplyVerdict:
         assert captured.get("MULTICA_ON_BEHALF_OF") == "m-uuid"
 
     async def test_start_comment_failure_still_succeeds(self):
-        # status change ok, signal comment fails -> degraded but True (status moved)
+        # status change ok, signal comment fails -> degraded but 'ok' (status moved)
         rcs = iter([0, 2])
 
         async def fake_exec(*args, **kwargs):
@@ -152,9 +152,9 @@ class TestApplyVerdict:
 
         with patch("discord_agent_secretary.approval_buttons.asyncio.create_subprocess_exec", side_effect=fake_exec):
             ok = await apply_human_verdict("multica", UUID, "start_go", "m", "X")
-        assert ok is True
+        assert ok == "ok"
 
-    async def test_timeout_returns_failure(self):
+    async def test_timeout_returns_timeout(self):
         import asyncio as _aio
 
         class _HangProc:
@@ -175,7 +175,7 @@ class TestApplyVerdict:
 
         with patch("discord_agent_secretary.approval_buttons.asyncio.create_subprocess_exec", side_effect=fake_exec):
             ok = await apply_human_verdict("multica", UUID, "done_approve", "m", "X", cli_timeout=0.01)
-        assert ok is False
+        assert ok == "timeout"
 
 
 class _FakeResponse:
@@ -243,7 +243,7 @@ class TestCallback:
         inter = _FakeInteraction(uid="42")
         with (
             patch("discord_agent_secretary.approval_buttons.get_settings", return_value=_Settings({"42": "m-uuid"})),
-            patch("discord_agent_secretary.approval_buttons.apply_human_verdict", return_value=True) as verdict,
+            patch("discord_agent_secretary.approval_buttons.apply_human_verdict", return_value="ok") as verdict,
         ):
             await btn.callback(inter)
         assert inter.response.deferred is True
@@ -255,9 +255,20 @@ class TestCallback:
         inter = _FakeInteraction(uid="42")
         with (
             patch("discord_agent_secretary.approval_buttons.get_settings", return_value=_Settings({"42": "m-uuid"})),
-            patch("discord_agent_secretary.approval_buttons.apply_human_verdict", return_value=False),
+            patch("discord_agent_secretary.approval_buttons.apply_human_verdict", return_value="failed"),
         ):
             await btn.callback(inter)
         assert inter.response.deferred is True
         assert inter.followup.sent and inter.followup.sent[0][1] is True
+        assert inter.edited is None
+
+    async def test_member_timeout_shows_specific_message(self):
+        btn = ApprovalButton("done_approve", UUID)
+        inter = _FakeInteraction(uid="42")
+        with (
+            patch("discord_agent_secretary.approval_buttons.get_settings", return_value=_Settings({"42": "m-uuid"})),
+            patch("discord_agent_secretary.approval_buttons.apply_human_verdict", return_value="timeout"),
+        ):
+            await btn.callback(inter)
+        assert "вовремя" in inter.followup.sent[0][0]
         assert inter.edited is None

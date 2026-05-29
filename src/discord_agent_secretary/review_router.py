@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
+from ._cli import strip_preamble as _strip_preamble
+from ._cli import text_or_none as _text
 from .review_routing import classify_review_candidate
 
 logger = logging.getLogger(__name__)
@@ -17,13 +19,6 @@ logger = logging.getLogger(__name__)
 RoutingMode = Literal["off", "subscribe", "assign"]
 ROUTING_COMMENT_PREFIX = "[automated-review-routing] "
 VERDICT_COMMENT_PREFIX = "[automated-review-verdict]"
-
-
-def _text(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    normalized = value.strip()
-    return normalized or None
 
 
 def _is_uuid_ref(value: str) -> bool:
@@ -76,14 +71,6 @@ def parse_routing_record_comment(comment: dict[str, object]) -> dict[str, object
     if issue_id is None or reviewer_ref is None:
         return None
     return record
-
-
-def _strip_preamble(raw: str) -> str:
-    lines = raw.splitlines()
-    for index, line in enumerate(lines):
-        if line.lstrip().startswith(("{", "[")):
-            return "\n".join(lines[index:])
-    return raw
 
 
 def parse_comment_list_json(data: Any) -> list[dict[str, object]]:
@@ -214,6 +201,7 @@ class AutomatedReviewRouter:
         backend: ReviewBackend,
     ) -> None:
         self._reviewer_refs = [r.strip() for r in reviewer_refs if r.strip()]
+        self._rr_index = 0
         self._routing_mode = routing_mode
         self._rework_status = rework_status
         self._dry_run = dry_run
@@ -268,9 +256,12 @@ class AutomatedReviewRouter:
         return None
 
     def _select_reviewer(self) -> str | None:
+        """Round-robin across configured reviewers (in-memory cursor)."""
         if not self._reviewer_refs:
             return None
-        return self._reviewer_refs[0]
+        ref = self._reviewer_refs[self._rr_index % len(self._reviewer_refs)]
+        self._rr_index += 1
+        return ref
 
     async def route_issue(self, issue: dict[str, object]) -> ReviewRouteResult:
         issue_id_raw = issue.get("id")

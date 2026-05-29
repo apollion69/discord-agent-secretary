@@ -61,13 +61,13 @@ class TestCollectSecrets:
         settings.github_token = "ghp_token"
         settings.linear_api_key = "lin_api"
         settings.jira_api_token = "jira_tok"
-        settings.anthropic_api_key = "anthropic_tok"
+        settings.multica_webhook_secret = "wh_secret"
         result = _collect_secrets(settings)
         assert "discord-secret-value" in result
         assert "ghp_token" in result
         assert "lin_api" in result
         assert "jira_tok" in result
-        assert "anthropic_tok" in result
+        assert "wh_secret" in result
 
     def test_skips_non_string_values(self) -> None:
         settings = MagicMock()
@@ -75,7 +75,7 @@ class TestCollectSecrets:
         settings.github_token = None
         settings.linear_api_key = 12345
         settings.jira_api_token = ""
-        settings.anthropic_api_key = "anth"
+        settings.multica_webhook_secret = "anth"
         result = _collect_secrets(settings)
         assert "real-token" in result
         assert "anth" in result

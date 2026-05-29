@@ -5,6 +5,37 @@ All notable changes to `discord-agent-secretary` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.7] - 2026-05-29
+
+### Changed
+
+- **Shared CLI helpers** (`_cli.py`): `strip_preamble`, `text_or_none`, and
+  `run_cli_json` replace 7 + 4 + several duplicated copies across the workers.
+  The shared `run_cli_json` reaps the child on timeout, fixing a zombie-process
+  leak in the mention scanner and digest worker.
+- **Round-robin reviewers**: automated review routing now rotates across all
+  configured `MULTICA_AUTOMATED_REVIEWERS` instead of always using the first.
+- **Worker resilience**: each worker loop now counts consecutive failures,
+  escalates the log WARNING→ERROR past a threshold, and backs off exponentially
+  (capped) instead of treating every error as a transient retry.
+- **Per-worker liveness**: `/readyz` now reports `last_ok` for the review poller,
+  digest, and mention scanner (not just the poller).
+- **Member-map cache**: the mention scanner caches the workspace member→Discord
+  map for `MENTION_MEMBER_MAP_TTL` seconds (default 300) instead of fetching it
+  every poll cycle.
+- Approval-button failures now show a cause-specific message (timeout vs the
+  issue having changed).
+
+### Added
+
+- Webhook endpoint rate limiting (`WEBHOOK_RATE_LIMIT`, default 30 POSTs per
+  client IP per 10s; 0 disables).
+
+### Removed
+
+- Dead `anthropic_api_key` / `anthropic_model` config and the unused `[llm]`
+  optional-dependency extra (the LLM parser fallback was never implemented).
+
 ## [0.2.6] - 2026-05-29
 
 ### Added

@@ -11,6 +11,8 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from ._cli import strip_preamble as _strip_preamble
+from ._cli import text_or_none as _text
 from .config import get_settings
 from .review_router import parse_comment_list_json, parse_routing_record_comment
 from .stale_review import StaleScanCounts, classify_stale_in_review, format_stale_summary
@@ -51,19 +53,6 @@ class StaleScanResult:
     actions: list[StaleIssueAction]
 
 
-def _text(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    normalized = value.strip()
-    return normalized or None
-
-
-def _strip_preamble(raw: str) -> str:
-    lines = raw.splitlines()
-    for index, line in enumerate(lines):
-        if line.lstrip().startswith(("{", "[")):
-            return "\n".join(lines[index:])
-    return raw
 
 
 def _parse_datetime(value: object) -> datetime | None:

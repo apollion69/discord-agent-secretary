@@ -4,19 +4,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from ._cli import text_or_none as _text
+
 
 @dataclass(frozen=True)
 class ReviewRoutingDecision:
     notify_discord: bool
     is_automated_autopilot: bool
     reason: str
-
-
-def _text(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    normalized = value.strip()
-    return normalized or None
 
 
 def classify_review_candidate(issue: Mapping[str, object]) -> ReviewRoutingDecision:

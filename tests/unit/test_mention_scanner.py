@@ -80,3 +80,41 @@ class TestStateEviction:
         assert "id-00000" not in reloaded
         assert "id-05000" in reloaded
         assert issue_seen == {"i": "t"}
+
+
+class TestMemberMapTTL:
+    def _worker(self, tmp_path, ttl):
+        from pathlib import Path
+
+        from discord_agent_secretary.mention_scanner import MentionScanWorker
+        return MentionScanWorker(
+            cli_path="multica", channel_id=1, app_url="", statuses=["todo"],
+            discord_member_map={"42": "u1"}, state_path=Path(tmp_path / "s.json"),
+            poll_interval=30.0, member_map_ttl=ttl,
+        )
+
+    async def test_cached_within_ttl(self, tmp_path):
+        w = self._worker(tmp_path, ttl=300.0)
+        calls = {"n": 0}
+
+        async def fake_cli(*args):
+            calls["n"] += 1
+            return {"members": [{"id": "m1", "user_id": "u1"}]}
+
+        w._cli_json = fake_cli
+        await w._member_discord_map()
+        await w._member_discord_map()
+        assert calls["n"] == 1  # second call served from cache
+
+    async def test_refetch_when_ttl_zero(self, tmp_path):
+        w = self._worker(tmp_path, ttl=0.0)
+        calls = {"n": 0}
+
+        async def fake_cli(*args):
+            calls["n"] += 1
+            return {"members": [{"id": "m1", "user_id": "u1"}]}
+
+        w._cli_json = fake_cli
+        await w._member_discord_map()
+        await w._member_discord_map()
+        assert calls["n"] == 2  # ttl=0 → always refetch

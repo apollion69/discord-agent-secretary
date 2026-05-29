@@ -15,6 +15,7 @@ import http.server
 import logging
 import socketserver
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final
@@ -22,9 +23,11 @@ from typing import Final
 logger = logging.getLogger(__name__)
 
 _WEBHOOK_BODY_LIMIT: Final = 64 * 1024
+_RATE_WINDOW: Final = 10.0  # seconds
 
 OnWebhook = Callable[[bytes, str], None]
-PollState = Callable[[], "str | None"]
+# Maps worker name -> ISO-8601 timestamp of its last successful cycle.
+Liveness = Callable[[], "dict[str, str]"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,16 +53,36 @@ class HealthcheckHandle:
 def _make_handler(
     is_ready: Callable[[], bool],
     webhook_callback: OnWebhook | None = None,
-    poll_state: PollState | None = None,
+    liveness: Liveness | None = None,
+    rate_limit: int = 0,
 ) -> type[http.server.BaseHTTPRequestHandler]:
+    # Fixed-window per-client-IP rate limit shared across handler instances.
+    rl_hits: dict[str, list[float]] = {}
+    rl_lock = threading.Lock()
+
+    def _rate_limited(client_ip: str) -> bool:
+        if rate_limit <= 0:
+            return False
+        now = time.monotonic()
+        with rl_lock:
+            hits = [t for t in rl_hits.get(client_ip, []) if now - t < _RATE_WINDOW]
+            if len(hits) >= rate_limit:
+                rl_hits[client_ip] = hits
+                return True
+            hits.append(now)
+            rl_hits[client_ip] = hits
+            return False
+
     class _Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 — stdlib API
             if self.path == "/livez":
                 self._respond(200, "alive\n")
             elif self.path == "/readyz":
                 ok = bool(is_ready())
-                poll_ts = poll_state() if poll_state is not None else None
-                extra = f"last_poll_ok={poll_ts}\n" if poll_ts else ""
+                live = liveness() if liveness is not None else {}
+                extra = "".join(
+                    f"worker={name} last_ok={ts}\n" for name, ts in live.items() if ts
+                )
                 self._respond(
                     200 if ok else 503,
                     ("ready\n" if ok else "not ready\n") + extra,
@@ -73,6 +96,9 @@ def _make_handler(
                 return
             if webhook_callback is None:
                 self._respond(404, "not found\n")
+                return
+            if _rate_limited(self.client_address[0]):
+                self._respond(429, "rate limited\n")
                 return
             content_length_str = self.headers.get("Content-Length")
             if not content_length_str:
@@ -126,7 +152,8 @@ def start_healthcheck(
     *,
     bind: str = "0.0.0.0",
     webhook_callback: OnWebhook | None = None,
-    poll_state: PollState | None = None,
+    liveness: Liveness | None = None,
+    rate_limit: int = 0,
 ) -> HealthcheckHandle | None:
     """Start the HTTP probe server in a daemon thread.
 
@@ -136,7 +163,7 @@ def start_healthcheck(
     if port <= 0:
         return None
 
-    handler = _make_handler(is_ready, webhook_callback, poll_state)
+    handler = _make_handler(is_ready, webhook_callback, liveness, rate_limit)
     server = socketserver.ThreadingTCPServer((bind, port), handler)
     server.daemon_threads = True
     actual_port = server.server_address[1]

@@ -15,11 +15,15 @@ import asyncio
 import json
 import logging
 import re
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import discord
 
+from ._cli import run_cli_json
+from ._worker import backoff_seconds, log_cycle_failure
 from .approval_buttons import (
     build_approval_view,
     format_approval_request,
@@ -96,14 +100,6 @@ def _save_state(path: Path, seen: dict[str, None], issue_seen: dict[str, str]) -
     tmp.replace(path)
 
 
-def _strip_preamble(raw: str) -> str:
-    lines = raw.splitlines()
-    for i, line in enumerate(lines):
-        if line.lstrip().startswith(("{", "[")):
-            return "\n".join(lines[i:])
-    return raw
-
-
 class MentionScanWorker:
     def __init__(
         self,
@@ -116,6 +112,8 @@ class MentionScanWorker:
         state_path: Path,
         poll_interval: float,
         cli_timeout: float = 30.0,
+        member_map_ttl: float = 300.0,
+        failure_alert_threshold: int = 3,
     ) -> None:
         self._cli_path = cli_path
         self._channel_id = channel_id
@@ -125,31 +123,30 @@ class MentionScanWorker:
         self._state_path = state_path
         self._poll_interval = poll_interval
         self._cli_timeout = cli_timeout
+        self._member_map_ttl = member_map_ttl
+        self._failure_alert_threshold = failure_alert_threshold
+        self._member_map_cache: dict[str, str] | None = None
+        self._member_map_at = 0.0
+        # Liveness for /readyz: ISO ts of the last fully-successful cycle.
+        self.last_cycle_ok: str | None = None
 
     async def _cli_json(self, *args: str) -> Any:
-        proc = await asyncio.create_subprocess_exec(
-            self._cli_path, *args,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        assert proc.stdout is not None and proc.stderr is not None
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                asyncio.gather(proc.stdout.read(), proc.stderr.read()), timeout=self._cli_timeout
-            )
-        except TimeoutError:
-            proc.kill()
-            raise
-        if proc.returncode is None:
-            await proc.wait()
-        if proc.returncode != 0:
-            raise RuntimeError(f"multica exit {proc.returncode}: {stderr.decode('utf-8','replace')[:200]}")
-        text = _strip_preamble(stdout.decode("utf-8", "replace")).strip()
-        return json.loads(text) if text else None
+        return await run_cli_json(self._cli_path, *args, cli_timeout=self._cli_timeout)
 
     async def _member_discord_map(self) -> dict[str, str]:
+        # Members change rarely; cache the map for member_map_ttl seconds to avoid
+        # spawning a `workspace member list` subprocess on every poll cycle.
+        now = time.monotonic()
+        if self._member_map_cache is not None and now - self._member_map_at < self._member_map_ttl:
+            return self._member_map_cache
         data = await self._cli_json("workspace", "member", "list", "--output", "json")
         members = data.get("members") if isinstance(data, dict) else data
-        return build_member_discord_map([m for m in (members or []) if isinstance(m, dict)], self._discord_member_map)
+        mapped = build_member_discord_map(
+            [m for m in (members or []) if isinstance(m, dict)], self._discord_member_map
+        )
+        self._member_map_cache = mapped
+        self._member_map_at = now
+        return mapped
 
     async def _active_issues(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -177,6 +174,7 @@ class MentionScanWorker:
         seen, issue_seen = _load_state(self._state_path)
         first_pass = not seen and not issue_seen
         logger.info("mention_scan_worker started", extra={"seen": len(seen), "first_pass": first_pass})
+        consecutive_failures = 0
         while True:
             try:
                 member_map = await self._member_discord_map()
@@ -223,9 +221,16 @@ class MentionScanWorker:
                 if first_pass or changed:
                     _save_state(self._state_path, seen, issue_seen)
                     first_pass = False
+                self.last_cycle_ok = datetime.now(UTC).isoformat()
+                consecutive_failures = 0
+                sleep_s = self._poll_interval
             except asyncio.CancelledError:
                 logger.info("mention_scan_worker: cancelled")
                 return
             except Exception as exc:  # noqa: BLE001
-                logger.warning("mention_scan_worker: cycle failed", extra={"detail": str(exc)})
-            await asyncio.sleep(self._poll_interval)
+                consecutive_failures += 1
+                log_cycle_failure(
+                    logger, "mention_scan_worker", exc, consecutive_failures, self._failure_alert_threshold
+                )
+                sleep_s = backoff_seconds(self._poll_interval, consecutive_failures)
+            await asyncio.sleep(sleep_s)

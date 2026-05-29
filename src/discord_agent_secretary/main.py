@@ -49,7 +49,6 @@ _SECRET_FIELDS = (
     "github_token",
     "linear_api_key",
     "jira_api_token",
-    "anthropic_api_key",
     "multica_webhook_secret",
 )
 
@@ -314,38 +313,37 @@ def _make_webhook_callback(
                     extra=_review_log_extra(event, routing_outcome="routing_unconfigured"),
                 )
                 return
-            if router is not None:
-                if loop is None:
-                    logger.warning(
-                        "review routing dropped: event loop not ready",
-                        extra=_review_log_extra(event, routing_outcome="loop_unavailable"),
-                    )
-                    return
-
-                async def _route_review() -> None:
-                    result = await router.route_issue(_issue_from_review_event(event))
-                    logger.info(
-                        "review notification suppressed",
-                        extra=_review_log_extra(
-                            event,
-                            routing_outcome=result.outcome,
-                            reviewer_ref=result.reviewer_ref,
-                        ),
-                    )
-
-                future = asyncio.run_coroutine_threadsafe(_route_review(), loop)
-                future.add_done_callback(
-                    lambda f: _log_background_failure(
-                        f,
-                        action="review routing",
-                        issue_id=event.issue_id,
-                        identifier=event.identifier,
-                        origin_type=event.origin_type,
-                        origin_id=event.origin_id,
-                        origin_source=event.origin_source,
-                        routing_outcome="routing_failed",
-                    )
+            if loop is None:
+                logger.warning(
+                    "review routing dropped: event loop not ready",
+                    extra=_review_log_extra(event, routing_outcome="loop_unavailable"),
                 )
+                return
+
+            async def _route_review() -> None:
+                result = await router.route_issue(_issue_from_review_event(event))
+                logger.info(
+                    "review notification suppressed",
+                    extra=_review_log_extra(
+                        event,
+                        routing_outcome=result.outcome,
+                        reviewer_ref=result.reviewer_ref,
+                    ),
+                )
+
+            future = asyncio.run_coroutine_threadsafe(_route_review(), loop)
+            future.add_done_callback(
+                lambda f: _log_background_failure(
+                    f,
+                    action="review routing",
+                    issue_id=event.issue_id,
+                    identifier=event.identifier,
+                    origin_type=event.origin_type,
+                    origin_id=event.origin_id,
+                    origin_source=event.origin_source,
+                    routing_outcome="routing_failed",
+                )
+            )
             return
         if loop is None:
             logger.warning("review notification dropped: event loop not ready")
@@ -464,6 +462,7 @@ def main() -> int:
             app_url=settings.multica_app_url,
             review_router=review_router,
             cli_timeout=max(settings.multica_cli_timeout, 30.0),
+            failure_alert_threshold=settings.backend_circuit_failure_threshold,
         )
         state.poll_worker = poll_worker
         logger.info(
@@ -485,6 +484,7 @@ def main() -> int:
             digest_hour=settings.digest_hour,
             state_path=Path(settings.digest_state_path),
             cli_timeout=max(settings.multica_cli_timeout, 30.0),
+            failure_alert_threshold=settings.backend_circuit_failure_threshold,
         )
         logger.info(
             "autopilot digest configured",
@@ -502,17 +502,30 @@ def main() -> int:
             state_path=Path(settings.mention_scan_state_path),
             poll_interval=settings.multica_poll_interval,
             cli_timeout=max(settings.multica_cli_timeout, 30.0),
+            member_map_ttl=settings.mention_member_map_ttl,
+            failure_alert_threshold=settings.backend_circuit_failure_threshold,
         )
         logger.info(
             "mention scanner configured",
             extra={"channel_id": settings.discord_review_channel_id, "statuses": settings.mention_scan_statuses},
         )
 
+    def _liveness() -> dict[str, str]:
+        out: dict[str, str] = {}
+        if poll_worker and poll_worker.last_poll_ok:
+            out["review-poll"] = poll_worker.last_poll_ok
+        if digest_worker and digest_worker.last_cycle_ok:
+            out["digest"] = digest_worker.last_cycle_ok
+        if mention_worker and mention_worker.last_cycle_ok:
+            out["mention-scan"] = mention_worker.last_cycle_ok
+        return out
+
     health_handle = start_healthcheck(
         settings.healthcheck_port,
         is_ready=client.is_ready,
         webhook_callback=webhook_cb,
-        poll_state=(lambda: poll_worker.last_poll_ok) if poll_worker else None,
+        liveness=_liveness,
+        rate_limit=settings.webhook_rate_limit,
     )
 
     @client.event

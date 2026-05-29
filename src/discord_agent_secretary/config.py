@@ -156,6 +156,11 @@ class Settings(BaseSettings):
         default="",
         description="HMAC-SHA256 secret for Multica webhook signatures (X-Multica-Signature header); empty = no verification.",
     )
+    webhook_rate_limit: int = Field(
+        default=30,
+        ge=0,
+        description="Max webhook POSTs per client IP per 10s window; 0 disables rate limiting.",
+    )
     discord_review_channel_id: int | None = Field(
         default=None,
         description="Discord channel ID for 'Готово к ревью' notifications.",
@@ -196,7 +201,7 @@ class Settings(BaseSettings):
     # === Automated review routing ===
     multica_automated_reviewers: list[str] = Field(
         default_factory=list,
-        description="CSV list of reviewer actor refs/names used for automated task review routing.",
+        description="CSV list of reviewer actor refs/names for automated review routing; issues are assigned round-robin across them.",
     )
     multica_review_routing_mode: ReviewRoutingMode = Field(
         default="off",
@@ -228,6 +233,10 @@ class Settings(BaseSettings):
         default="/opt/discord-secretary/mention-seen.json",
         description="Dedup state for mention notifications (seen comment ids + issue updated_at).",
     )
+    mention_member_map_ttl: float = Field(
+        default=300.0,
+        description="Seconds to cache the workspace member→Discord map before re-fetching (members change rarely).",
+    )
 
 
     # === GitHub backend ===
@@ -243,10 +252,6 @@ class Settings(BaseSettings):
     jira_email: str = Field(default="", description="Jira Cloud account email")
     jira_api_token: str = Field(default="", description="Jira API token / PAT")
     jira_project_key: str = Field(default="", description="Jira project key, e.g. ABC")
-
-    # === Anthropic (optional LLM fallback for parser when regex confidence < 0.9) ===
-    anthropic_api_key: str = Field(default="", description="Anthropic API key for LLM fallback")
-    anthropic_model: str = Field(default="claude-haiku-4-5-20251001")
 
     # === Runtime ===
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"

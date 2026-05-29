@@ -20,6 +20,8 @@ from typing import Any
 
 import discord
 
+from ._cli import run_cli_json
+from ._worker import backoff_seconds, log_cycle_failure
 from .review_router import AutomatedReviewRouter
 from .review_routing import classify_review_candidate
 
@@ -50,15 +52,6 @@ def _save_seen(path: Path, seen: set[str]) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps({"seen_ids": sorted(seen)}), encoding="utf-8")
     tmp.replace(path)
-
-
-def _strip_preamble(raw: str) -> str:
-    """Drop leading non-JSON lines such as 'Showing 3 issues.'"""
-    lines = raw.splitlines()
-    for i, line in enumerate(lines):
-        if line.lstrip().startswith(("{", "[")):
-            return "\n".join(lines[i:])
-    return raw
 
 
 def _format_message(issue: dict[str, Any], app_url: str) -> str:
@@ -122,6 +115,7 @@ class ReviewPollWorker:
         app_url: str,
         review_router: AutomatedReviewRouter | None = None,
         cli_timeout: float = 30.0,
+        failure_alert_threshold: int = 3,
     ) -> None:
         self._cli_path = cli_path
         self._channel_id = channel_id
@@ -130,6 +124,7 @@ class ReviewPollWorker:
         self._app_url = app_url
         self._review_router = review_router
         self._cli_timeout = cli_timeout
+        self._failure_alert_threshold = failure_alert_threshold
         self._last_poll_ok: str | None = None
 
     @property
@@ -138,37 +133,10 @@ class ReviewPollWorker:
         return self._last_poll_ok
 
     async def _list_in_review(self) -> list[dict[str, Any]]:
-        # argv-form exec: no shell, no injection risk
-        proc = await asyncio.create_subprocess_exec(
-            self._cli_path,
-            "issue",
-            "list",
-            "--status",
-            "in_review",
-            "--output",
-            "json",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        data = await run_cli_json(
+            self._cli_path, "issue", "list", "--status", "in_review",
+            "--output", "json", cli_timeout=self._cli_timeout,
         )
-        assert proc.stdout is not None and proc.stderr is not None
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                asyncio.gather(proc.stdout.read(), proc.stderr.read()),
-                timeout=self._cli_timeout,
-            )
-        except TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise
-        if proc.returncode is None:
-            await proc.wait()
-        if proc.returncode != 0:
-            err = stderr.decode("utf-8", errors="replace").strip()[:300]
-            raise RuntimeError(f"multica exit {proc.returncode}: {err}")
-        text = _strip_preamble(stdout.decode("utf-8", errors="replace")).strip()
-        if not text:
-            return []
-        data: Any = json.loads(text)
         if isinstance(data, dict):
             return [i for i in data.get("issues", []) if isinstance(i, dict)]
         if isinstance(data, list):
@@ -221,6 +189,7 @@ class ReviewPollWorker:
             "review_poll_worker started",
             extra={"seen_count": len(seen), "interval": self._poll_interval},
         )
+        consecutive_failures = 0
         while True:
             try:
                 issues = await self._list_in_review()
@@ -269,14 +238,17 @@ class ReviewPollWorker:
                         _save_seen(self._seen_path, seen)
 
                 self._last_poll_ok = datetime.now(UTC).isoformat()
+                consecutive_failures = 0
+                sleep_s = self._poll_interval
 
             except asyncio.CancelledError:
                 logger.info("review_poll_worker: cancelled")
                 return
             except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "review_poll_worker: poll failed",
-                    extra={"detail": str(exc)},
+                consecutive_failures += 1
+                log_cycle_failure(
+                    logger, "review_poll_worker", exc, consecutive_failures, self._failure_alert_threshold
                 )
+                sleep_s = backoff_seconds(self._poll_interval, consecutive_failures)
 
-            await asyncio.sleep(self._poll_interval)
+            await asyncio.sleep(sleep_s)

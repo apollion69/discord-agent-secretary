@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "discord-agent-secretary"
-version = "0.2.6"
+version = "0.2.7"
 description = "Discord bot that turns slash commands and channel chatter into issues across Multica, GitHub, Linear, Jira via a pluggable backend protocol."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -42,7 +42,6 @@ multica = []                              # uses the `multica` CLI binary; no Py
 github  = ["httpx>=0.27,<1"]              # already in core, declared for parity
 linear  = ["httpx>=0.27,<1"]
 jira    = ["httpx>=0.27,<1"]
-llm     = ["anthropic>=0.34,<1"]          # optional LLM fallback for low-confidence parses
 
 dev = [
     "pytest>=7.4",

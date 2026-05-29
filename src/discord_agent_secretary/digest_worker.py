@@ -22,6 +22,9 @@ from zoneinfo import ZoneInfo
 
 import discord
 
+from ._cli import run_cli_json
+from ._worker import log_cycle_failure
+
 logger = logging.getLogger(__name__)
 
 _WINDOW = timedelta(hours=24)
@@ -40,13 +43,6 @@ def _save_last_date(path: Path, value: str) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps({"last_date": value}), encoding="utf-8")
     tmp.replace(path)
-
-
-def _strip_preamble(raw: str) -> str:
-    for i, line in enumerate(raw.splitlines()):
-        if line.lstrip().startswith(("{", "[")):
-            return "\n".join(raw.splitlines()[i:])
-    return raw
 
 
 def _is_autopilot(issue: dict[str, Any]) -> bool:
@@ -107,6 +103,7 @@ class DigestWorker:
         digest_hour: int,
         state_path: Path,
         cli_timeout: float = 30.0,
+        failure_alert_threshold: int = 3,
         now_fn: Any = None,
     ) -> None:
         self._cli_path = cli_path
@@ -116,33 +113,18 @@ class DigestWorker:
         self._hour = digest_hour
         self._state_path = state_path
         self._cli_timeout = cli_timeout
+        self._failure_alert_threshold = failure_alert_threshold
+        # Liveness for /readyz: ISO ts of the last fully-successful cycle.
+        self.last_cycle_ok: str | None = None
         # Injectable clock for tests; defaults to real tz-aware now.
         self._now = now_fn or (lambda: datetime.now(self._tz))
 
     async def _list(self, status: str) -> list[dict[str, Any]]:
-        proc = await asyncio.create_subprocess_exec(
+        data = await run_cli_json(
             self._cli_path, "issue", "list", "--status", status,
-            "--limit", "500", "--output", "json",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            "--limit", "500", "--output", "json", cli_timeout=self._cli_timeout,
         )
-        assert proc.stdout is not None and proc.stderr is not None
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                asyncio.gather(proc.stdout.read(), proc.stderr.read()),
-                timeout=self._cli_timeout,
-            )
-        except TimeoutError:
-            proc.kill()
-            raise
-        if proc.returncode is None:
-            await proc.wait()
-        if proc.returncode != 0:
-            raise RuntimeError(f"multica exit {proc.returncode}: {stderr.decode('utf-8', 'replace')[:200]}")
-        text = _strip_preamble(stdout.decode("utf-8", "replace")).strip()
-        if not text:
-            return []
-        data: Any = json.loads(text)
-        items = data.get("issues", []) if isinstance(data, dict) else data
+        items = data.get("issues", []) if isinstance(data, dict) else (data or [])
         return [i for i in items if isinstance(i, dict)]
 
     async def build(self) -> str | None:
@@ -185,6 +167,7 @@ class DigestWorker:
     async def run(self, client: discord.Client) -> None:
         last = _load_last_date(self._state_path)
         logger.info("digest_worker started", extra={"hour": self._hour, "last_date": last})
+        consecutive_failures = 0
         while True:
             try:
                 now = self._now()
@@ -201,11 +184,16 @@ class DigestWorker:
                         _save_last_date(self._state_path, last)
                     # else: delivery failed — leave `last` unchanged so the next
                     # hourly tick retries instead of silently skipping the day.
+                self.last_cycle_ok = datetime.now(UTC).isoformat()
+                consecutive_failures = 0
                 sleep_s = self._sleep_seconds(self._now())
             except asyncio.CancelledError:
                 logger.info("digest_worker: cancelled")
                 return
             except Exception as exc:  # noqa: BLE001
-                logger.warning("digest_worker: cycle failed", extra={"detail": str(exc)})
+                consecutive_failures += 1
+                log_cycle_failure(
+                    logger, "digest_worker", exc, consecutive_failures, self._failure_alert_threshold
+                )
                 sleep_s = 3600.0
             await asyncio.sleep(sleep_s)

@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 
+from ._cli import text_or_none as _text
+
 
 @dataclass(frozen=True)
 class StaleReviewDecision:
@@ -19,13 +21,6 @@ class StaleScanCounts:
     human_escalated: int = 0
     reviewer_escalated: int = 0
     routing_blockers: int = 0
-
-
-def _text(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    normalized = value.strip()
-    return normalized or None
 
 
 def _age_days(issue: Mapping[str, object]) -> int:
