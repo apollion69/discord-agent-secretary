@@ -1,6 +1,8 @@
 """Unit tests for the mention scanner's pure helpers."""
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from discord_agent_secretary.mention_scanner import (
@@ -42,7 +44,21 @@ class TestBuildMemberDiscordMap:
             {"id": "m3", "user_id": "u3"},  # not in discord map
         ]
         dm = {"d1": "u1", "d2": "u2"}  # discord_id -> user_id
-        assert build_member_discord_map(members, dm) == {"m1": "d1", "m2": "d2"}
+        assert build_member_discord_map(members, dm) == {
+            "m1": "d1",
+            "u1": "d1",
+            "m2": "d2",
+            "u2": "d2",
+        }
+
+    def test_indexes_multica_user_id_mentions(self):
+        members = [{"id": "member-row-1", "user_id": "user-r-gilmanov"}]
+        dm = {"discord-r-gilmanov": "user-r-gilmanov"}
+
+        assert build_member_discord_map(members, dm) == {
+            "member-row-1": "discord-r-gilmanov",
+            "user-r-gilmanov": "discord-r-gilmanov",
+        }
 
 
 class TestRendering:
@@ -118,3 +134,75 @@ class TestMemberMapTTL:
         await w._member_discord_map()
         await w._member_discord_map()
         assert calls["n"] == 2  # ttl=0 → always refetch
+
+
+class TestMentionScanWorker:
+    async def test_scans_comments_even_when_issue_updated_at_is_unchanged(
+        self, tmp_path, monkeypatch
+    ):
+        from pathlib import Path
+
+        from discord_agent_secretary import mention_scanner
+        from discord_agent_secretary.mention_scanner import MentionScanWorker
+
+        issue_id = "86396a42-a275-426e-a2fc-e342adfdc3a6"
+        issue_updated_at = "2026-06-04T08:18:37Z"
+        comment_id = "13fc4708-866a-4a2f-bbcc-f4fccb2fdeed"
+        state_path = Path(tmp_path / "mention-seen.json")
+        _save_state(state_path, {}, {issue_id: issue_updated_at})
+        sent: list[str] = []
+
+        worker = MentionScanWorker(
+            cli_path="multica",
+            channel_id=1,
+            app_url="https://multica.example",
+            statuses=["in_review"],
+            discord_member_map={"42": "u1"},
+            state_path=state_path,
+            poll_interval=30.0,
+        )
+
+        async def fake_cli(*args):
+            if args[:3] == ("workspace", "member", "list"):
+                return {"members": [{"id": MID, "user_id": "u1"}]}
+            if args[:2] == ("issue", "list"):
+                return {
+                    "issues": [
+                        {
+                            "id": issue_id,
+                            "identifier": "VEN-1641",
+                            "status": "in_review",
+                            "updated_at": issue_updated_at,
+                        }
+                    ]
+                }
+            if args[:3] == ("issue", "comment", "list"):
+                return {
+                    "comments": [
+                        {
+                            "id": comment_id,
+                            "created_at": "2026-06-04T14:13:31Z",
+                            "updated_at": "2026-06-04T14:13:31Z",
+                            "content": f"[@r.gilmanov](mention://member/{MID}) почитай тред",
+                        }
+                    ]
+                }
+            raise AssertionError(args)
+
+        async def fake_send(_client, message, view=None):
+            sent.append(message)
+
+        async def stop_after_cycle(_sleep_s):
+            raise asyncio.CancelledError
+
+        worker._cli_json = fake_cli
+        worker._send = fake_send
+        monkeypatch.setattr(mention_scanner.asyncio, "sleep", stop_after_cycle)
+
+        with pytest.raises(asyncio.CancelledError):
+            await worker.run(client=object())
+
+        assert len(sent) == 1
+        assert "<@42>" in sent[0]
+        seen, _ = _load_state(state_path)
+        assert comment_id in seen

@@ -51,13 +51,20 @@ def extract_member_mentions(content: str) -> set[str]:
 def build_member_discord_map(
     members: list[dict[str, Any]], discord_member_map: dict[str, str]
 ) -> dict[str, str]:
-    """member.id -> discord_id, joined via user_id (DISCORD_MEMBER_MAP is discord_id -> user_id)."""
+    """Multica mention UUID -> discord_id, joined via user_id.
+
+    DISCORD_MEMBER_MAP is discord_id -> user_id. Multica has emitted both
+    member-row IDs and user IDs in `mention://member/<uuid>`, so index both
+    values when present.
+    """
     user_to_discord = {uid: did for did, uid in discord_member_map.items()}
     out: dict[str, str] = {}
     for m in members:
         mid, uid = m.get("id"), m.get("user_id")
         if isinstance(mid, str) and uid in user_to_discord:
             out[mid] = user_to_discord[uid]
+        if isinstance(uid, str) and uid in user_to_discord:
+            out[uid] = user_to_discord[uid]
     return out
 
 
@@ -78,6 +85,15 @@ def format_mention_ping(
     )
     tail = f": «{snippet}»" if snippet else ""
     return f"\U0001f4ac <@{discord_id}>, тебя упомянули в {ref}{tail}"
+
+
+def _parse_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 # seen-comments is an insertion-ordered set (dict keys) so the bound below
@@ -183,10 +199,11 @@ class MentionScanWorker:
                 for issue in issues:
                     iid = str(issue["id"])
                     upd = str(issue.get("updated_at") or "")
-                    if issue_seen.get(iid) == upd:
-                        continue  # no new activity since last scan
-                    issue_seen[iid] = upd
-                    changed = True
+                    previous_issue_seen = issue_seen.get(iid)
+                    if previous_issue_seen != upd:
+                        issue_seen[iid] = upd
+                        changed = True
+                    previous_issue_seen_at = _parse_ts(previous_issue_seen)
                     data = await self._cli_json("issue", "comment", "list", iid, "--output", "json")
                     comments = data.get("comments") if isinstance(data, dict) else data
                     for c in (comments or []):
@@ -194,6 +211,15 @@ class MentionScanWorker:
                         if not cid or cid in seen:
                             continue
                         seen[cid] = None
+                        changed = True
+                        comment_at = _parse_ts(str(c.get("updated_at") or c.get("created_at") or ""))
+                        if (
+                            not first_pass
+                            and previous_issue_seen_at is not None
+                            and comment_at is not None
+                            and comment_at <= previous_issue_seen_at
+                        ):
+                            continue
                         if first_pass:
                             continue  # seed silently
                         content = c.get("content") or ""

@@ -31,6 +31,15 @@ and the project follows [Semantic Versioning](https://semver.org/).
 - Webhook endpoint rate limiting (`WEBHOOK_RATE_LIMIT`, default 30 POSTs per
   client IP per 10s; 0 disables).
 
+### Fixed
+
+- Mention scanner no longer relies on `issue.updated_at` as the only comment
+  activity gate; Multica comments can be newer than the issue timestamp, so the
+  scanner now reads active issue comments and uses the comment seen-set plus the
+  previous issue timestamp as the flood guard.
+- Mention scanner now resolves both Multica `member.id` and `member.user_id`
+  values in `mention://member/<uuid>` links.
+
 ### Removed
 
 - Dead `anthropic_api_key` / `anthropic_model` config and the unused `[llm]`
