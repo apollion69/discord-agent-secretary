@@ -275,3 +275,21 @@ class TestCardsSettings:
     def test_cards_enabled_from_env(self, monkeypatch, clean_settings):
         monkeypatch.setenv("DISCORD_CARDS_ENABLED", "true")
         assert Settings(_env_file=None).discord_cards_enabled is True
+
+
+class TestObserverSettings:
+    def test_observer_default_off(self, clean_settings):
+        assert Settings(_env_file=None).discord_observer_enabled is False
+
+    def test_observer_enabled_from_env(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("DISCORD_OBSERVER_ENABLED", "true")
+        assert Settings(_env_file=None).discord_observer_enabled is True
+
+    def test_default_triggers(self, clean_settings):
+        assert Settings(_env_file=None).discord_observer_triggers == [
+            "/task", "!task", "задача:", "task:",
+        ]
+
+    def test_triggers_from_csv(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("DISCORD_OBSERVER_TRIGGERS", "/t, !t , задача:")
+        assert Settings(_env_file=None).discord_observer_triggers == ["/t", "!t", "задача:"]

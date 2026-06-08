@@ -77,6 +77,14 @@ class TestBuildIntents:
         assert intents.guilds is True
         assert intents.guild_messages is True
 
+    def test_message_content_opt_in(self) -> None:
+        # Off by default (privileged), on only when the observer asks for it.
+        assert build_intents().message_content is False
+        assert build_intents(enable_message_content=True).message_content is True
+        # The other privileged intents stay off even when message content is on.
+        on = build_intents(enable_message_content=True)
+        assert on.members is False and on.presences is False
+
 
 class TestAssertSafePermissions:
     def test_allows_minimal_perms(self) -> None:

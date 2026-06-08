@@ -32,10 +32,7 @@ from .backends import (
 from .cards import build_task_card
 from .threads import (
     ThreadConfig,
-    build_allowed_mentions,
-    build_thread_intro,
-    build_thread_name,
-    open_task_thread,
+    announce_task_thread,
     resolve_thread_pings,
 )
 
@@ -308,27 +305,16 @@ def register_handlers(
                 ping_user_ids=_thread_config.ping_user_ids,
                 ping_role_ids=_thread_config.ping_role_ids,
             )
-            display_title = getattr(ref, "title", None) or title
-            await open_task_thread(
+            await announce_task_thread(
                 message=message,
                 channel=getattr(interaction, "channel", None),
-                name=build_thread_name(
-                    ref.identifier,
-                    display_title,
-                    max_words=_thread_config.name_max_words,
-                ),
-                intro=build_thread_intro(
-                    identifier=ref.identifier or "",
-                    issue_id=ref.id,
-                    title=display_title,
-                    app_url=_app_url,
-                    pings=pings,
-                    description=description,
-                    priority=priority.value if priority else None,
-                ),
-                allowed_mentions=build_allowed_mentions(pings),
-                private=_thread_config.private,
-                auto_archive_minutes=_thread_config.auto_archive_minutes,
+                ref=ref,
+                fallback_title=title,
+                app_url=_app_url,
+                pings=pings,
+                thread_config=_thread_config,
+                description=description,
+                priority=priority.value if priority else None,
             )
 
     @tree.command(

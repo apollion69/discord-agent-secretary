@@ -85,9 +85,16 @@ a daemon thread exposing `/livez` and `/readyz`. The server has no auth
 and answers anyone who can reach the bind address — keep it bound to
 loopback or the cluster network, never to the public internet.
 
-### No Message Content intent
-The bot requests only `guilds` and `guild_messages` intents. It cannot read
-arbitrary messages — only slash command payloads directed at it explicitly.
+### Message Content intent — opt-in only (passive observer, v0.4)
+By default the bot requests only `guilds` and `guild_messages` intents and
+cannot read arbitrary message bodies — only slash command payloads directed at
+it explicitly. The privileged **MESSAGE CONTENT** intent is enabled *only* when
+`DISCORD_OBSERVER_ENABLED=true` (`build_intents(enable_message_content=...)`).
+When on, the observer reads bodies *only* in `DISCORD_WATCH_CHANNELS`, acts only
+on trigger-prefixed messages, and never auto-creates a task — every creation is
+behind an author-scoped ✅ confirmation button. Enabling it requires toggling the
+intent in the Dev Portal and, past 100 guilds, Discord verification. `members`
+and `presences` stay OFF regardless.
 
 ### Timeout on every external call
 `MulticaBackend._invoke()` enforces `timeout=settings.multica_cli_timeout`
@@ -101,7 +108,7 @@ as zombies.
 
 | Risk | Mitigation status |
 |---|---|
-| P5 passive observer — reading channel messages | Not implemented; will require explicit opt-in + separate threat model |
+| Passive observer — reading channel messages | Opt-in (`DISCORD_OBSERVER_ENABLED`), scoped to watch channels, human-confirmed creation (v0.4) |
 | Multi-guild token reuse | Single-tenant deployment assumed in v0.1 |
 | Distributed (multi-replica) rate limiting | Out of scope; current limiter is in-process only |
 

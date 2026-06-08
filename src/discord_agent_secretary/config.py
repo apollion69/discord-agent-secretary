@@ -24,7 +24,10 @@ _CSV_FIELDS = {
     "mention_scan_statuses",
     "discord_thread_ping_user_ids",
     "discord_thread_ping_role_ids",
+    "discord_observer_triggers",
 }
+
+_DEFAULT_OBSERVER_TRIGGERS = ["/task", "!task", "задача:", "task:"]
 
 # Discord accepts only these thread auto-archive durations (minutes).
 _VALID_AUTO_ARCHIVE: frozenset[int] = frozenset({60, 1440, 4320, 10080})
@@ -151,6 +154,20 @@ class Settings(BaseSettings):
     discord_thread_ping_role_ids: list[int] = Field(
         default_factory=list,
         description="CSV of Discord role IDs always pinged inside a new task thread.",
+    )
+
+    # === Passive secretary observer ===
+    discord_observer_enabled: bool = Field(
+        default=False,
+        description=(
+            "Watch DISCORD_WATCH_CHANNELS for trigger-prefixed messages and offer "
+            "a ✅/❌ confirmation to create a task. Enabling this turns ON the "
+            "privileged MESSAGE CONTENT intent. Opt-in; default off."
+        ),
+    )
+    discord_observer_triggers: list[str] = Field(
+        default_factory=lambda: list(_DEFAULT_OBSERVER_TRIGGERS),
+        description="CSV of message prefixes that trigger the observer (case-insensitive).",
     )
 
     # === Components V2 cards ===
@@ -339,6 +356,7 @@ class Settings(BaseSettings):
         "mention_scan_statuses",
         "discord_thread_ping_user_ids",
         "discord_thread_ping_role_ids",
+        "discord_observer_triggers",
         mode="before",
     )
     @classmethod

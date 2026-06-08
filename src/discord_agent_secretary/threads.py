@@ -194,6 +194,52 @@ def build_thread_intro(
     return "\n".join(lines)
 
 
+async def announce_task_thread(
+    *,
+    message: Any,
+    channel: Any,
+    ref: Any,
+    fallback_title: str,
+    app_url: str,
+    pings: ThreadPings,
+    thread_config: ThreadConfig,
+    description: str | None = None,
+    priority: str | None = None,
+    log: logging.Logger | None = None,
+) -> Any | None:
+    """High-level shared step used by both the slash handler and the observer.
+
+    No-op (returns ``None``) when threads are disabled or no announcement
+    message exists. Otherwise builds the thread name/intro/allowed-mentions from
+    the issue ref + resolved pings and opens the thread best-effort.
+    """
+    if not thread_config.enabled or message is None:
+        return None
+    display_title = getattr(ref, "title", None) or fallback_title
+    return await open_task_thread(
+        message=message,
+        channel=channel,
+        name=build_thread_name(
+            getattr(ref, "identifier", None),
+            display_title,
+            max_words=thread_config.name_max_words,
+        ),
+        intro=build_thread_intro(
+            identifier=getattr(ref, "identifier", None) or "",
+            issue_id=getattr(ref, "id", "") or "",
+            title=display_title,
+            app_url=app_url,
+            pings=pings,
+            description=description,
+            priority=priority,
+        ),
+        allowed_mentions=build_allowed_mentions(pings),
+        private=thread_config.private,
+        auto_archive_minutes=thread_config.auto_archive_minutes,
+        log=log,
+    )
+
+
 async def open_task_thread(
     *,
     message: Any,

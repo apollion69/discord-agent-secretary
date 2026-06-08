@@ -20,6 +20,17 @@ and the project follows [Semantic Versioning](https://semver.org/).
   introspecting the view tree. Requires `discord.py >= 2.6` (floor bumped from
   2.3).
 
+- **Passive secretary observer** (`observer.py`, `DISCORD_OBSERVER_ENABLED`):
+  watch `DISCORD_WATCH_CHANNELS` for trigger-prefixed messages
+  (`/task`, `!task`, `задача:`, `task:` — configurable), parse them with the
+  regex-first `parsers.parse_task` (RU+EN, no LLM), and post a **human-in-the-loop**
+  ✅/❌ confirmation. Only ✅ creates the task (and opens its thread); only the
+  message author can confirm. Enabling it turns ON the privileged MESSAGE CONTENT
+  intent (`build_intents(enable_message_content=...)`) — documented in
+  `docs/threat-model.md`. Default off.
+- `threads.announce_task_thread` — a shared high-level helper now used by both the
+  `/task` slash command and the observer to open + populate the task thread.
+
 ### Changed
 
 - Dependency floor: `discord.py>=2.6,<3` (was `>=2.3,<3`) for Components V2.

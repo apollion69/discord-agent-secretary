@@ -399,7 +399,17 @@ def main() -> int:
 
     backend = make_backend(settings)
 
-    client, tree = build_client()
+    client, tree = build_client(
+        enable_message_content=settings.discord_observer_enabled
+    )
+    thread_cfg = ThreadConfig(
+        enabled=settings.discord_thread_enabled,
+        private=settings.discord_thread_private,
+        auto_archive_minutes=settings.discord_thread_auto_archive_minutes,
+        name_max_words=settings.discord_thread_name_max_words,
+        ping_user_ids=tuple(settings.discord_thread_ping_user_ids),
+        ping_role_ids=tuple(settings.discord_thread_ping_role_ids),
+    )
     # Persistent approval buttons: register the dynamic item so clicks are routed
     # by custom_id even after a restart (no in-memory View needed). Gate only on
     # the member map — the callback authorizes by member, and buttons posted in a
@@ -412,16 +422,34 @@ def main() -> int:
         settings.discord_guild_id,
         app_url=settings.multica_app_url,
         member_map=settings.discord_member_map,
-        thread_config=ThreadConfig(
-            enabled=settings.discord_thread_enabled,
-            private=settings.discord_thread_private,
-            auto_archive_minutes=settings.discord_thread_auto_archive_minutes,
-            name_max_words=settings.discord_thread_name_max_words,
-            ping_user_ids=tuple(settings.discord_thread_ping_user_ids),
-            ping_role_ids=tuple(settings.discord_thread_ping_role_ids),
-        ),
+        thread_config=thread_cfg,
         cards_enabled=settings.discord_cards_enabled,
     )
+
+    if settings.discord_observer_enabled and settings.discord_watch_channels:
+        from .observer import register_message_observer
+
+        register_message_observer(
+            client,
+            backend=backend,
+            watch_channels=settings.discord_watch_channels,
+            triggers=settings.discord_observer_triggers,
+            app_url=settings.multica_app_url,
+            member_map=settings.discord_member_map,
+            thread_config=thread_cfg,
+        )
+        logger.info(
+            "passive observer enabled",
+            extra={
+                "watch_channels": settings.discord_watch_channels,
+                "triggers": settings.discord_observer_triggers,
+            },
+        )
+    elif settings.discord_observer_enabled:
+        logger.warning(
+            "DISCORD_OBSERVER_ENABLED is true but DISCORD_WATCH_CHANNELS is empty "
+            "— observer will not run"
+        )
 
     state = _RunState()
 

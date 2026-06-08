@@ -32,16 +32,20 @@ class UnsafePermissionsError(RuntimeError):
     """Raised when the bot has permissions outside the safe allow-list."""
 
 
-def build_intents() -> discord.Intents:
-    """Minimal intents — slash commands only.
+def build_intents(*, enable_message_content: bool = False) -> discord.Intents:
+    """Minimal intents — slash commands only by default.
 
-    Privileged intents (Presence / Server Members / Message Content) stay OFF
-    to match the security plan. If message-content reading becomes needed for
-    the secretary mode (P5), enable explicitly and request verification.
+    Presence / Server Members stay OFF unconditionally. The privileged MESSAGE
+    CONTENT intent stays OFF unless `enable_message_content=True`, which the
+    passive secretary observer (DISCORD_OBSERVER_ENABLED) requires to read
+    message bodies. Enabling it needs the intent toggled in the Dev Portal and,
+    past 100 servers, Discord verification — see docs/threat-model.md.
     """
     intents = discord.Intents.none()
     intents.guilds = True
     intents.guild_messages = True
+    if enable_message_content:
+        intents.message_content = True
     return intents
 
 
@@ -68,13 +72,18 @@ def assert_safe_permissions(guild: discord.Guild, bot_member: discord.Member) ->
         )
 
 
-def build_client() -> tuple[discord.Client, app_commands.CommandTree]:
+def build_client(
+    *, enable_message_content: bool = False
+) -> tuple[discord.Client, app_commands.CommandTree]:
     """Return (client, command_tree) ready for handler registration.
 
     Caller adds commands via `tree.command()` decorators, then runs the client
-    with `client.run(token)`.
+    with `client.run(token)`. Pass `enable_message_content=True` only when the
+    passive observer is enabled.
     """
     proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or None
-    client = discord.Client(intents=build_intents(), proxy=proxy)
+    client = discord.Client(
+        intents=build_intents(enable_message_content=enable_message_content), proxy=proxy
+    )
     tree = app_commands.CommandTree(client)
     return client, tree
