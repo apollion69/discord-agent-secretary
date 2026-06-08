@@ -42,6 +42,7 @@ multica = []                              # uses the `multica` CLI binary; no Py
 github  = ["httpx>=0.27,<1"]              # already in core, declared for parity
 linear  = ["httpx>=0.27,<1"]
 jira    = ["httpx>=0.27,<1"]
+mcp     = ["mcp>=1.0"]                     # scoped Discord MCP server (mcp_server/)
 
 dev = [
     "pytest>=7.4",
@@ -63,6 +64,7 @@ Issues   = "https://github.com/apollion69/discord-agent-secretary/issues"
 discord-agent-secretary = "discord_agent_secretary.main:main"
 discord-agent-secretary-stale-review = "discord_agent_secretary.stale_scanner:main"
 discord-agent-secretary-review = "discord_agent_secretary.review_verdict:main"
+discord-agent-secretary-mcp = "discord_agent_secretary.mcp_server.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -109,3 +111,13 @@ ignore = ["E501"]
 python_version = "3.11"
 strict = true
 warn_unused_ignores = true
+
+# The optional `mcp` SDK is not installed in the core/dev env; the FastMCP wiring
+# in mcp_server/server.py is lazy-imported and pragma-no-cover.
+[[tool.mypy.overrides]]
+module = "mcp.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "discord_agent_secretary.mcp_server.server"
+disallow_untyped_decorators = false

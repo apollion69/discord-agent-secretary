@@ -232,6 +232,26 @@ python -m discord_agent_secretary
 
 ---
 
+## Scoped Discord MCP server (optional)
+
+For AI-agent chatops, the package ships a **minimal-permission** Model Context
+Protocol server (`discord-agent-secretary-mcp`) that exposes only three tools —
+`list_threads`, `read_thread`, `post_message` (mentions always suppressed). It
+needs no Administrator and no privileged intents; the bot token comes from
+`DISCORD_MCP_BOT_TOKEN`. This is deliberately narrower than the popular
+third-party Discord MCP servers, which recommend Administrator + privileged
+gateway intents (an OWASP MCP01/MCP03 risk).
+
+```bash
+pip install "discord-agent-secretary[mcp]"
+DISCORD_MCP_BOT_TOKEN=... discord-agent-secretary-mcp
+```
+
+Grant the MCP bot only `View Channels`, `Read Message History`, and
+`Send Messages in Threads`.
+
+---
+
 ## Threat model
 
 - **No ADMINISTRATOR / MANAGE_GUILD** — boot is aborted if these are present.

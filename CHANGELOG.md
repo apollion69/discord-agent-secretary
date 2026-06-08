@@ -44,6 +44,16 @@ and the project follows [Semantic Versioning](https://semver.org/).
   replies needs the MESSAGE CONTENT intent (shared with the observer gate).
   Default off.
 
+- **Scoped Discord MCP server** (`mcp_server/`, optional `[mcp]` extra, entrypoint
+  `discord-agent-secretary-mcp`): gives an LLM agent a *minimal* Discord surface —
+  `list_threads`, `read_thread`, `post_message` (mentions suppressed) — and
+  nothing else. No Administrator, no privileged intents, token via
+  `DISCORD_MCP_BOT_TOKEN` (never hard-coded). The dependency-light core
+  (`DiscordThreadGateway`) is fully unit-tested without the `mcp` package; the
+  FastMCP wiring lazy-imports `mcp`. Directly answers the deep-research finding
+  that the popular third-party Discord MCP servers recommend Administrator and
+  privileged intents (OWASP MCP01/MCP03).
+
 ### Changed
 
 - Dependency floor: `discord.py>=2.6,<3` (was `>=2.3,<3`) for Components V2.
