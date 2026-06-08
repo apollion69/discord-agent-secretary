@@ -420,6 +420,7 @@ def main() -> int:
             ping_user_ids=tuple(settings.discord_thread_ping_user_ids),
             ping_role_ids=tuple(settings.discord_thread_ping_role_ids),
         ),
+        cards_enabled=settings.discord_cards_enabled,
     )
 
     state = _RunState()

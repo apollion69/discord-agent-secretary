@@ -767,3 +767,51 @@ class TestTaskThread:
         assert "✅ Создана задача" in confirmation
         assert "[VEN-9]" in confirmation
         assert "http://m.local:3000/venchur/issues/VEN-9" in confirmation
+
+
+class TestTaskCard:
+    """`/task` Components V2 card (DISCORD_CARDS_ENABLED)."""
+
+    async def test_card_enabled_sends_layout_view(self) -> None:
+        import discord
+
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.create_issue = AsyncMock(
+            return_value=IssueRef(id="u1", title="Fix login", identifier="VEN-9")
+        )
+        register_handlers(
+            tree, backend, guild_id=42, app_url="http://m.local:3000", cards_enabled=True
+        )
+
+        from discord import Object
+
+        cmd = tree.get_command("task", guild=Object(id=42))
+        assert cmd is not None
+        interaction = _make_interaction(user_id=7, guild_id=42)
+        interaction.response.defer = AsyncMock()
+        await cmd.callback(interaction, title="Fix login", priority=None)
+
+        kwargs = interaction.followup.send.call_args.kwargs
+        assert isinstance(kwargs.get("view"), discord.ui.LayoutView)
+        # No positional plain-text content when a card is sent.
+        assert interaction.followup.send.call_args.args == ()
+
+    async def test_card_disabled_sends_plain_text(self) -> None:
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.create_issue = AsyncMock(
+            return_value=IssueRef(id="u1", title="t", identifier="VEN-1")
+        )
+        register_handlers(tree, backend, guild_id=42)  # cards off by default
+
+        from discord import Object
+
+        cmd = tree.get_command("task", guild=Object(id=42))
+        assert cmd is not None
+        interaction = _make_interaction(user_id=7, guild_id=42)
+        interaction.response.defer = AsyncMock()
+        await cmd.callback(interaction, title="t")
+
+        assert "view" not in interaction.followup.send.call_args.kwargs
+        assert "✅ Создана задача" in interaction.followup.send.call_args.args[0]

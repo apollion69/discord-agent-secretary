@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "discord-agent-secretary"
-version = "0.3.0"
+version = "0.4.0"
 description = "Discord bot that turns slash commands and channel chatter into issues across Multica, GitHub, Linear, Jira via a pluggable backend protocol."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,7 +28,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "discord.py>=2.3,<3",
+    "discord.py>=2.6,<3",  # >=2.6 for Components V2 (ui.LayoutView) used by cards.py
     "pydantic>=2.5,<3",
     "pydantic-settings>=2.1,<3",
     "structlog>=24.1,<26",

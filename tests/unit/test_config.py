@@ -266,3 +266,12 @@ class TestThreadSettings:
         monkeypatch.setenv("DISCORD_THREAD_NAME_MAX_WORDS", "-1")
         with pytest.raises(ValidationError):
             Settings(_env_file=None)
+
+
+class TestCardsSettings:
+    def test_cards_default_off(self, clean_settings):
+        assert Settings(_env_file=None).discord_cards_enabled is False
+
+    def test_cards_enabled_from_env(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("DISCORD_CARDS_ENABLED", "true")
+        assert Settings(_env_file=None).discord_cards_enabled is True

@@ -29,6 +29,7 @@ from .backends import (
     CircuitOpenError,
     IssueBackend,
 )
+from .cards import build_task_card
 from .threads import (
     ThreadConfig,
     build_allowed_mentions,
@@ -120,21 +121,25 @@ def _ctx_extra(interaction: discord.Interaction) -> dict[str, Any]:
 
 async def _safe_followup(
     interaction: discord.Interaction,
-    content: str,
+    content: str | None = None,
     *,
+    view: discord.ui.LayoutView | None = None,
     ephemeral: bool = False,
 ) -> discord.Message | None:
     """Send a followup, swallowing Discord HTTP errors with a log line.
 
-    Discord can rate-limit or 5xx the followup itself; without this guard
-    the handler would raise inside the event loop and the user would see
-    nothing at all. Returns the sent message (so the caller can attach a
-    thread to it) or ``None`` if the send failed.
+    Pass either `content` (plain text) or `view` (a Components V2 LayoutView) —
+    a V2 message carries no plain content. Discord can rate-limit or 5xx the
+    followup itself; without this guard the handler would raise inside the event
+    loop and the user would see nothing at all. Returns the sent message (so the
+    caller can attach a thread to it) or ``None`` if the send failed.
     """
     try:
         # wait=True returns the created WebhookMessage so the caller can attach
         # a thread to it (the default overload is typed to return None).
-        return await interaction.followup.send(content, ephemeral=ephemeral, wait=True)
+        if view is not None:
+            return await interaction.followup.send(view=view, ephemeral=ephemeral, wait=True)
+        return await interaction.followup.send(content or "", ephemeral=ephemeral, wait=True)
     except discord.HTTPException as e:
         logger.warning(
             "followup send failed",
@@ -182,6 +187,7 @@ def register_handlers(
     app_url: str = "",
     member_map: dict[str, str] | None = None,
     thread_config: ThreadConfig | None = None,
+    cards_enabled: bool = False,
 ) -> None:
     """Attach `/task`, `/status`, `/assign` to `tree`.
 
@@ -278,10 +284,21 @@ def register_handlers(
             ref_text = f"[{identifier or ref.id}](<{issue_url}>)"
         else:
             ref_text = f"`{identifier or ref.id}`"
-        message = await _safe_followup(
-            interaction,
-            f"✅ Создана задача **{safe_title}** {ref_text}",
-        )
+        if cards_enabled:
+            message = await _safe_followup(
+                interaction,
+                view=build_task_card(
+                    heading=safe_title,
+                    ref_text=ref_text,
+                    priority=priority.value if priority else None,
+                    description=description,
+                ),
+            )
+        else:
+            message = await _safe_followup(
+                interaction,
+                f"✅ Создана задача **{safe_title}** {ref_text}",
+            )
         # Venture thread-per-task: best-effort, never fails the command.
         if _thread_config.enabled and message is not None:
             pings = resolve_thread_pings(

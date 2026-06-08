@@ -5,6 +5,25 @@ All notable changes to `discord-agent-secretary` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-06-08
+
+> Modernization bundle (research-driven). Every item is opt-in; default config
+> reproduces 0.3.0 behaviour exactly.
+
+### Added
+
+- **Components V2 task cards** (`cards.py`, `DISCORD_CARDS_ENABLED`): render the
+  `/task` confirmation as a colour-accented Discord Components V2 card (heading +
+  ref + priority + optional description) instead of a plain-text line. Accent
+  colour signals priority (urgent=red, high=orange, medium=blurple, low=green).
+  Pure builders — the card is a `discord.ui.LayoutView`, unit-tested by
+  introspecting the view tree. Requires `discord.py >= 2.6` (floor bumped from
+  2.3).
+
+### Changed
+
+- Dependency floor: `discord.py>=2.6,<3` (was `>=2.3,<3`) for Components V2.
+
 ## [0.3.0] - 2026-06-08
 
 ### Added

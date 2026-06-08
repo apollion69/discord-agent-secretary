@@ -153,6 +153,16 @@ class Settings(BaseSettings):
         description="CSV of Discord role IDs always pinged inside a new task thread.",
     )
 
+    # === Components V2 cards ===
+    discord_cards_enabled: bool = Field(
+        default=False,
+        description=(
+            "Render the /task confirmation as a Components V2 card (colour-accented "
+            "container) instead of a plain-text line. Needs discord.py >= 2.6. "
+            "Opt-in; default off keeps the plain-text reply."
+        ),
+    )
+
     # === Multica backend ===
     multica_workspace_id: str = Field(
         default="",
