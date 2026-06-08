@@ -16,7 +16,9 @@ def backoff_seconds(base: float, failures: int, cap: float = BACKOFF_CAP_DEFAULT
     """Exponential backoff from `base`, doubling per consecutive failure, capped."""
     if failures <= 0:
         return base
-    return min(base * (2 ** (failures - 1)), cap)
+    # float() pins the result type: int**int is Any to mypy (negative exponent
+    # would yield float), which would otherwise leak Any out of this helper.
+    return float(min(base * (2 ** (failures - 1)), cap))
 
 
 def log_cycle_failure(

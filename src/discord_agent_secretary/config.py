@@ -18,7 +18,16 @@ from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 from pydantic_settings.sources import DotEnvSettingsSource, EnvSettingsSource
 
-_CSV_FIELDS = {"discord_watch_channels", "multica_automated_reviewers", "mention_scan_statuses"}
+_CSV_FIELDS = {
+    "discord_watch_channels",
+    "multica_automated_reviewers",
+    "mention_scan_statuses",
+    "discord_thread_ping_user_ids",
+    "discord_thread_ping_role_ids",
+}
+
+# Discord accepts only these thread auto-archive durations (minutes).
+_VALID_AUTO_ARCHIVE: frozenset[int] = frozenset({60, 1440, 4320, 10080})
 
 
 class _CsvFriendlyEnvSource(EnvSettingsSource):
@@ -104,6 +113,44 @@ class Settings(BaseSettings):
     discord_watch_channels: list[int] = Field(
         default_factory=list,
         description="Channel IDs the secretary observes for implicit task extraction",
+    )
+
+    # === Venture thread-per-task ===
+    discord_thread_enabled: bool = Field(
+        default=False,
+        description=(
+            "Open a Discord thread per /task and ping participants inside it, "
+            "keeping the main channel uncluttered. Opt-in; default off preserves "
+            "existing behaviour."
+        ),
+    )
+    discord_thread_private: bool = Field(
+        default=False,
+        description=(
+            "Create private threads (members added by mention) instead of public "
+            "threads attached to the announcement message."
+        ),
+    )
+    discord_thread_auto_archive_minutes: int = Field(
+        default=4320,
+        description="Thread auto-archive duration; Discord allows only 60, 1440, 4320, 10080.",
+    )
+    discord_thread_name_max_words: int = Field(
+        default=6,
+        ge=0,
+        le=50,
+        description=(
+            "Cap the title portion of a thread name to the first N words (0 = no "
+            "word cap); the full name is always hard-capped at 100 chars."
+        ),
+    )
+    discord_thread_ping_user_ids: list[int] = Field(
+        default_factory=list,
+        description="CSV of Discord user IDs always pinged inside a new task thread.",
+    )
+    discord_thread_ping_role_ids: list[int] = Field(
+        default_factory=list,
+        description="CSV of Discord role IDs always pinged inside a new task thread.",
     )
 
     # === Multica backend ===
@@ -276,7 +323,14 @@ class Settings(BaseSettings):
                 ) from e
         return v
 
-    @field_validator("discord_watch_channels", "multica_automated_reviewers", "mention_scan_statuses", mode="before")
+    @field_validator(
+        "discord_watch_channels",
+        "multica_automated_reviewers",
+        "mention_scan_statuses",
+        "discord_thread_ping_user_ids",
+        "discord_thread_ping_role_ids",
+        mode="before",
+    )
     @classmethod
     def _split_csv_list(cls, v: object) -> object:
         """Accept int, str, or list — coerce comma-separated env strings.
@@ -297,6 +351,22 @@ class Settings(BaseSettings):
     @classmethod
     def _coerce_channel_ids(cls, v: list[object]) -> list[int]:
         return [int(str(x)) for x in v]
+
+    @field_validator("discord_thread_ping_user_ids", "discord_thread_ping_role_ids")
+    @classmethod
+    def _coerce_thread_ping_ids(cls, v: list[object]) -> list[int]:
+        return [int(str(x)) for x in v]
+
+    @field_validator("discord_thread_auto_archive_minutes")
+    @classmethod
+    def _validate_auto_archive(cls, v: int) -> int:
+        """Reject any duration Discord won't accept (else create_thread 400s)."""
+        if v not in _VALID_AUTO_ARCHIVE:
+            raise ValueError(
+                "discord_thread_auto_archive_minutes must be one of "
+                f"{sorted(_VALID_AUTO_ARCHIVE)}, got {v}"
+            )
+        return v
 
     @field_validator("multica_workspace_id")
     @classmethod

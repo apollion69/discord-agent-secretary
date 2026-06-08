@@ -70,6 +70,9 @@ uv pip install discord-agent-secretary
 2. Create a new application → Bot tab → copy **Token**.
 3. OAuth2 → URL Generator: scopes `bot` + `applications.commands`,
    permissions `Send Messages` + `Use Application Commands`.
+   (For the optional thread-per-task feature, also grant
+   `Create Public Threads` + `Send Messages in Threads` — and
+   `Create Private Threads` if you set `DISCORD_THREAD_PRIVATE=true`.)
 4. Invite the bot to your server.
 
 ### 3. Configure
@@ -115,6 +118,46 @@ DISCORD_MEMBER_MAP={"111111111111111111":"<member-uuid>","222222222222222222":"<
   silently ignores the header for any other caller.
 - Member UUIDs are validated at startup; an invalid UUID prevents the bot from booting.
 - The full variable format and an example are documented in `.env.example`.
+
+#### Thread-per-task (Venture secretary)
+
+Set `DISCORD_THREAD_ENABLED=true` and every `/task` additionally opens a
+dedicated Discord **thread** for the new issue, then pings the participants
+**inside the thread** — the main channel keeps only the short confirmation, so
+it never gets cluttered and each task becomes a jump-able sub-space.
+
+```dotenv
+DISCORD_THREAD_ENABLED=true
+# Public threads attach to the announcement message (default). Private threads
+# are standalone; members are pulled in by the intro mention.
+DISCORD_THREAD_PRIVATE=false
+# Discord allows only 60 / 1440 / 4320 / 10080 minutes.
+DISCORD_THREAD_AUTO_ARCHIVE_MINUTES=4320
+# Thread name = "<ticket-id> <first N title words>", hard-capped at 100 chars.
+DISCORD_THREAD_NAME_MAX_WORDS=6
+# Standing watchers always pinged inside a new task thread (CSV of Discord IDs).
+DISCORD_THREAD_PING_USER_IDS=111111111111111111
+DISCORD_THREAD_PING_ROLE_IDS=
+```
+
+- **Thread name** — `"<identifier> <short title>"` (e.g. `VEN-128 fix login
+  redirect`), built from the issue's generated identifier plus the first
+  `DISCORD_THREAD_NAME_MAX_WORDS` words of the title, hard-capped at Discord's
+  100-char limit.
+- **Who gets pinged** — the creator, the assignee (only when `assignee` is a
+  member UUID resolvable through `DISCORD_MEMBER_MAP` — no extra backend call),
+  and the configured standing watchers (`DISCORD_THREAD_PING_USER_IDS` /
+  `_ROLE_IDS`).
+- **Mention hygiene** — pings are scoped with `AllowedMentions` to exactly the
+  resolved ids (`everyone=False`); no mass-ping is possible even if the task
+  title/description contained `@everyone`.
+- **Best-effort** — if the bot lacks the thread permission (or Discord errors),
+  the failure is logged and swallowed; task creation and the main-channel
+  confirmation are never affected.
+- **Permissions** — needs `Create Public Threads` + `Send Messages in Threads`
+  on the channel (plus `Create Private Threads` when `DISCORD_THREAD_PRIVATE`).
+  None of these are in the bot's refused-permission allow-list, so the feature
+  keeps the minimal-privilege posture.
 
 ---
 

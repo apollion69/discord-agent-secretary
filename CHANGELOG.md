@@ -5,6 +5,35 @@ All notable changes to `discord-agent-secretary` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-06-08
+
+### Added
+
+- **Venture thread-per-task** (`threads.py`): when `DISCORD_THREAD_ENABLED=true`,
+  a successful `/task` opens a dedicated Discord thread named
+  `"<ticket-id> <short title>"` and pings the participants **inside the thread**
+  — the main channel keeps only the short confirmation, so it never gets
+  cluttered and every task becomes a jump-able sub-space. Participants pinged:
+  the creator, the assignee (when given as a member UUID resolvable through
+  `DISCORD_MEMBER_MAP` — zero backend coupling), and the configured standing
+  watchers. Public threads are attached to the announcement message; private
+  threads (`DISCORD_THREAD_PRIVATE=true`) are standalone, members pulled in by
+  mention. Thread mentions are scoped with `AllowedMentions` to exactly the
+  resolved ids (`everyone=False`) — no mass-ping is possible even if task text
+  contained one. Thread creation is best-effort: any Discord error is logged and
+  swallowed, so a missing permission never fails task creation.
+  New settings: `DISCORD_THREAD_ENABLED`, `DISCORD_THREAD_PRIVATE`,
+  `DISCORD_THREAD_AUTO_ARCHIVE_MINUTES` (validated ∈ {60,1440,4320,10080}),
+  `DISCORD_THREAD_NAME_MAX_WORDS`, `DISCORD_THREAD_PING_USER_IDS`,
+  `DISCORD_THREAD_PING_ROLE_IDS`. Default off — existing deployments are
+  unchanged.
+
+### Fixed
+
+- Type-checking under mypy 2.0 (`asyncio.Task[None]`, `Button[Any]`,
+  `from_custom_id` annotations, pinned float/str return types) — the `mypy src`
+  CI gate is green again after the unpinned `mypy>=1.10` resolved to 2.0.
+
 ## [0.2.7] - 2026-05-29
 
 ### Changed

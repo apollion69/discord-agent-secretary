@@ -29,6 +29,14 @@ from .backends import (
     CircuitOpenError,
     IssueBackend,
 )
+from .threads import (
+    ThreadConfig,
+    build_allowed_mentions,
+    build_thread_intro,
+    build_thread_name,
+    open_task_thread,
+    resolve_thread_pings,
+)
 
 _T = TypeVar("_T")
 
@@ -115,20 +123,24 @@ async def _safe_followup(
     content: str,
     *,
     ephemeral: bool = False,
-) -> None:
+) -> discord.Message | None:
     """Send a followup, swallowing Discord HTTP errors with a log line.
 
     Discord can rate-limit or 5xx the followup itself; without this guard
     the handler would raise inside the event loop and the user would see
-    nothing at all.
+    nothing at all. Returns the sent message (so the caller can attach a
+    thread to it) or ``None`` if the send failed.
     """
     try:
-        await interaction.followup.send(content, ephemeral=ephemeral)
+        # wait=True returns the created WebhookMessage so the caller can attach
+        # a thread to it (the default overload is typed to return None).
+        return await interaction.followup.send(content, ephemeral=ephemeral, wait=True)
     except discord.HTTPException as e:
         logger.warning(
             "followup send failed",
             extra={**_ctx_extra(interaction), "detail": str(e)},
         )
+        return None
 
 
 async def _safe_invoke(
@@ -169,6 +181,7 @@ def register_handlers(
     rate_limiter: RateLimiter | None = None,
     app_url: str = "",
     member_map: dict[str, str] | None = None,
+    thread_config: ThreadConfig | None = None,
 ) -> None:
     """Attach `/task`, `/status`, `/assign` to `tree`.
 
@@ -176,11 +189,19 @@ def register_handlers(
     propagate instantly. Global registration takes up to an hour. Tests can
     inject a custom `RateLimiter` (e.g. with a fake clock or a generous
     budget) to keep behaviour deterministic.
+
+    When `thread_config.enabled`, a successful `/task` additionally opens a
+    Discord thread for the issue and pings the participants inside it (see
+    `threads.py`). The default disabled config preserves prior behaviour.
     """
     guild = discord.Object(id=guild_id) if guild_id else None
     limiter = rate_limiter if rate_limiter is not None else RateLimiter()
     _app_url = app_url.rstrip("/")
     _member_map = member_map or {}
+    _thread_config = thread_config or ThreadConfig()
+    # Reverse map (Multica member UUID -> Discord id) so a thread can ping the
+    # assignee when it was given as a known member UUID — no backend call.
+    _reverse_member_map = {uuid: did for did, uuid in _member_map.items()}
 
     async def _enforce_rate_limit(interaction: discord.Interaction) -> bool:
         key = (
@@ -257,10 +278,41 @@ def register_handlers(
             ref_text = f"[{identifier or ref.id}](<{issue_url}>)"
         else:
             ref_text = f"`{identifier or ref.id}`"
-        await _safe_followup(
+        message = await _safe_followup(
             interaction,
             f"✅ Создана задача **{safe_title}** {ref_text}",
         )
+        # Venture thread-per-task: best-effort, never fails the command.
+        if _thread_config.enabled and message is not None:
+            pings = resolve_thread_pings(
+                invoker_id=invoker_id,
+                assignee=assignee,
+                reverse_member_map=_reverse_member_map,
+                ping_user_ids=_thread_config.ping_user_ids,
+                ping_role_ids=_thread_config.ping_role_ids,
+            )
+            display_title = getattr(ref, "title", None) or title
+            await open_task_thread(
+                message=message,
+                channel=getattr(interaction, "channel", None),
+                name=build_thread_name(
+                    ref.identifier,
+                    display_title,
+                    max_words=_thread_config.name_max_words,
+                ),
+                intro=build_thread_intro(
+                    identifier=ref.identifier or "",
+                    issue_id=ref.id,
+                    title=display_title,
+                    app_url=_app_url,
+                    pings=pings,
+                    description=description,
+                    priority=priority.value if priority else None,
+                ),
+                allowed_mentions=build_allowed_mentions(pings),
+                private=_thread_config.private,
+                auto_archive_minutes=_thread_config.auto_archive_minutes,
+            )
 
     @tree.command(
         name="status",

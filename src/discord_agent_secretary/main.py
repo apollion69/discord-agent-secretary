@@ -34,6 +34,7 @@ from .logging_setup import configure_logging
 from .mention_scanner import MentionScanWorker
 from .pull_worker import ReviewPollWorker
 from .review_router import AutomatedReviewRouter, CliReviewBackend
+from .threads import ThreadConfig
 from .webhook import (
     ReviewEvent,
     format_review_message,
@@ -367,7 +368,7 @@ def _make_webhook_callback(
     return _on_webhook
 
 
-def _log_worker_exit(task: asyncio.Task) -> None:
+def _log_worker_exit(task: asyncio.Task[None]) -> None:
     """A background worker should run forever; an unexpected exit is critical."""
     if task.cancelled():
         return
@@ -411,6 +412,14 @@ def main() -> int:
         settings.discord_guild_id,
         app_url=settings.multica_app_url,
         member_map=settings.discord_member_map,
+        thread_config=ThreadConfig(
+            enabled=settings.discord_thread_enabled,
+            private=settings.discord_thread_private,
+            auto_archive_minutes=settings.discord_thread_auto_archive_minutes,
+            name_max_words=settings.discord_thread_name_max_words,
+            ping_user_ids=tuple(settings.discord_thread_ping_user_ids),
+            ping_role_ids=tuple(settings.discord_thread_ping_role_ids),
+        ),
     )
 
     state = _RunState()

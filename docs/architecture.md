@@ -115,3 +115,51 @@ but are caught via the abstract hierarchy in `handlers.py`.
    in v0.1.
 6. `RateLimiter` per (guild, user) caps subprocess churn / API quota
    burn from a spamming member.
+
+---
+
+## Decision: Thread-per-task (`threads.py`, v0.3.0)
+
+### Context
+
+Teams running the bot in a busy channel wanted each `/task` to spawn its own
+discussion space and loop in the right people, without flooding the main
+channel with per-task pings.
+
+### Decision
+
+An opt-in (`DISCORD_THREAD_ENABLED`, default off) post-step on the `/task`
+success path opens a Discord thread for the new issue and posts a rich intro
+that @-pings the participants *inside* the thread. The main-channel reply keeps
+its existing short confirmation contract unchanged.
+
+- **`threads.py` is pure-helpers + one best-effort orchestrator.**
+  `build_thread_name` / `resolve_thread_pings` / `build_allowed_mentions` /
+  `build_thread_intro` are deterministic and unit-tested without Discord;
+  `open_task_thread` is the only async, Discord-touching function and it never
+  raises into the handler — a thread failure must not fail task creation, which
+  already succeeded.
+- **Public (default)** threads attach to the announcement message
+  (`Message.create_thread`); **private** threads are standalone
+  (`TextChannel.create_thread(type=private_thread)`), members pulled in by the
+  intro mention.
+- **Mention hygiene**: `AllowedMentions` is scoped to exactly the resolved ids
+  with `everyone=False`, so untrusted task text can never trigger a mass-ping.
+- **Assignee resolution is zero-coupling**: the handler reverses the in-memory
+  `DISCORD_MEMBER_MAP` (`member-uuid → discord-id`) — no Multica call is added
+  to the backend-agnostic handler. A name-based assignee simply isn't pinged.
+
+### Security note
+
+Thread creation needs `create_public_threads` / `create_private_threads` and
+`send_messages_in_threads` — **none** of which are in the refused-permission
+allow-list (`MANAGE_CHANNELS` is refused but is *not* required to create
+threads), so the feature is fully compatible with the minimal-privilege posture.
+
+### Alternatives considered
+
+| Alternative | Rejected because |
+|---|---|
+| Forum channel (one post per task) | Larger UX/permission change; a thread on the existing channel is the minimal, reversible step |
+| Live Multica member lookup to ping name-based assignees | Couples the backend-agnostic handler to Multica; the `mention_scanner` already pings assignees once @mentioned in a comment |
+| `AllowedMentions(users=True)` | Less safe than enumerating exact ids — a stray mention in task text could ping a non-participant |

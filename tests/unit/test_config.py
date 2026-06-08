@@ -45,6 +45,16 @@ class TestSettingsFromEnv:
         s = Settings(_env_file=None)
         assert s.discord_watch_channels == [123, 456, 789]
 
+    def test_thread_ping_user_ids_parsed_from_csv(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("DISCORD_THREAD_PING_USER_IDS", "111, 222 , 333")
+        s = Settings(_env_file=None)
+        assert s.discord_thread_ping_user_ids == [111, 222, 333]
+
+    def test_thread_ping_role_ids_parsed_from_csv(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("DISCORD_THREAD_PING_ROLE_IDS", "999")
+        s = Settings(_env_file=None)
+        assert s.discord_thread_ping_role_ids == [999]
+
     def test_watch_channels_empty_csv_yields_empty_list(self, monkeypatch, clean_settings):
         monkeypatch.setenv("DISCORD_WATCH_CHANNELS", "")
         s = Settings(_env_file=None)
@@ -216,3 +226,43 @@ class TestMemberMapValidation:
 
     def test_empty_map_is_default(self, clean_settings):
         assert Settings(_env_file=None).discord_member_map == {}
+
+
+class TestThreadSettings:
+    """Venture thread-per-task settings: defaults, coercion, validation."""
+
+    def test_defaults_are_off_and_safe(self, clean_settings):
+        s = Settings(_env_file=None)
+        assert s.discord_thread_enabled is False
+        assert s.discord_thread_private is False
+        assert s.discord_thread_auto_archive_minutes == 4320
+        assert s.discord_thread_name_max_words == 6
+        assert s.discord_thread_ping_user_ids == []
+        assert s.discord_thread_ping_role_ids == []
+
+    def test_enabled_from_env(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("DISCORD_THREAD_ENABLED", "true")
+        monkeypatch.setenv("DISCORD_THREAD_PRIVATE", "true")
+        s = Settings(_env_file=None)
+        assert s.discord_thread_enabled is True
+        assert s.discord_thread_private is True
+
+    def test_auto_archive_accepts_valid_value(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("DISCORD_THREAD_AUTO_ARCHIVE_MINUTES", "10080")
+        s = Settings(_env_file=None)
+        assert s.discord_thread_auto_archive_minutes == 10080
+
+    def test_auto_archive_rejects_invalid_value(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("DISCORD_THREAD_AUTO_ARCHIVE_MINUTES", "30")
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None)
+
+    def test_name_max_words_zero_allowed(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("DISCORD_THREAD_NAME_MAX_WORDS", "0")
+        s = Settings(_env_file=None)
+        assert s.discord_thread_name_max_words == 0
+
+    def test_name_max_words_rejects_negative(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("DISCORD_THREAD_NAME_MAX_WORDS", "-1")
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None)

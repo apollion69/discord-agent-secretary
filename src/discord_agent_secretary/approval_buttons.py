@@ -23,7 +23,7 @@ import asyncio
 import logging
 import os
 import re
-from typing import TypedDict
+from typing import Any, TypedDict
 
 import discord
 
@@ -147,7 +147,7 @@ async def apply_human_verdict(
 
 
 class ApprovalButton(
-    discord.ui.DynamicItem[discord.ui.Button],
+    discord.ui.DynamicItem[discord.ui.Button[Any]],
     template=r"appr:(?P<action>start_go|start_decline|done_approve|done_rework):(?P<issue>[0-9a-fA-F-]{36})",
 ):
     """Persistent per-issue approval button (start or completion)."""
@@ -166,7 +166,12 @@ class ApprovalButton(
         )
 
     @classmethod
-    async def from_custom_id(cls, interaction, item, match):  # noqa: ANN001
+    async def from_custom_id(
+        cls,
+        interaction: discord.Interaction,
+        item: discord.ui.Item[Any],
+        match: re.Match[str],
+    ) -> ApprovalButton:
         return cls(match["action"], match["issue"])
 
     async def callback(self, interaction: discord.Interaction) -> None:

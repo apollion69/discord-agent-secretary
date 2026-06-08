@@ -577,3 +577,193 @@ class TestActAsMember:
 
         assert backend.create_issue.call_args.kwargs["on_behalf_of"] is None
         assert not any("no Multica member mapping" in r.message for r in caplog.records)
+
+
+class TestTaskThread:
+    """`/task` thread-per-task: opens a Discord thread and pings inside it."""
+
+    @staticmethod
+    def _msg_with_thread() -> MagicMock:
+        thread = MagicMock()
+        thread.send = AsyncMock()
+        msg = MagicMock()
+        msg.create_thread = AsyncMock(return_value=thread)
+        return msg
+
+    @staticmethod
+    def _task_cmd(tree: object) -> object:
+        from discord import Object
+
+        cmd = tree.get_command("task", guild=Object(id=42))  # type: ignore[attr-defined]
+        assert cmd is not None
+        return cmd
+
+    async def test_disabled_by_default_opens_no_thread(self) -> None:
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.create_issue = AsyncMock(
+            return_value=IssueRef(id="u1", title="t", identifier="VEN-1")
+        )
+        register_handlers(tree, backend, guild_id=42)  # no thread_config → off
+
+        cmd = self._task_cmd(tree)
+        interaction = _make_interaction(user_id=7, guild_id=42)
+        interaction.response.defer = AsyncMock()
+        msg = self._msg_with_thread()
+        interaction.followup.send = AsyncMock(return_value=msg)
+        await cmd.callback(interaction, title="t")  # type: ignore[attr-defined]
+
+        msg.create_thread.assert_not_called()
+
+    async def test_enabled_opens_public_thread_and_pings_creator_and_watchers(self) -> None:
+        from discord_agent_secretary.threads import ThreadConfig
+
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.create_issue = AsyncMock(
+            return_value=IssueRef(id="u1", title="Fix login redirect", identifier="VEN-9")
+        )
+        register_handlers(
+            tree,
+            backend,
+            guild_id=42,
+            app_url="http://m.local:3000",
+            thread_config=ThreadConfig(enabled=True, name_max_words=6, ping_user_ids=(555,)),
+        )
+
+        cmd = self._task_cmd(tree)
+        interaction = _make_interaction(user_id=7, guild_id=42)
+        interaction.response.defer = AsyncMock()
+        msg = self._msg_with_thread()
+        interaction.followup.send = AsyncMock(return_value=msg)
+        await cmd.callback(interaction, title="Fix login redirect")  # type: ignore[attr-defined]
+
+        msg.create_thread.assert_awaited_once()
+        name = msg.create_thread.call_args.kwargs["name"]
+        assert name.startswith("VEN-9")
+        thread = msg.create_thread.return_value
+        thread.send.assert_awaited_once()
+        intro = thread.send.call_args.args[0]
+        assert "<@7>" in intro  # creator
+        assert "<@555>" in intro  # configured watcher
+        am = thread.send.call_args.kwargs["allowed_mentions"]
+        assert am.everyone is False
+        assert {o.id for o in am.users} == {7, 555}
+
+    async def test_enabled_pings_assignee_resolved_via_member_map(self) -> None:
+        from discord_agent_secretary.threads import ThreadConfig
+
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.create_issue = AsyncMock(
+            return_value=IssueRef(id="u1", title="t", identifier="VEN-2")
+        )
+        register_handlers(
+            tree,
+            backend,
+            guild_id=42,
+            member_map={"999": "member-uuid-7"},  # reverse: member-uuid-7 -> 999
+            thread_config=ThreadConfig(enabled=True),
+        )
+
+        cmd = self._task_cmd(tree)
+        interaction = _make_interaction(user_id=7, guild_id=42)
+        interaction.response.defer = AsyncMock()
+        msg = self._msg_with_thread()
+        interaction.followup.send = AsyncMock(return_value=msg)
+        await cmd.callback(interaction, title="t", assignee="member-uuid-7")  # type: ignore[attr-defined]
+
+        intro = msg.create_thread.return_value.send.call_args.args[0]
+        assert "<@999>" in intro  # assignee resolved to Discord
+
+    async def test_enabled_private_uses_channel_create_thread(self) -> None:
+        import discord
+
+        from discord_agent_secretary.threads import ThreadConfig
+
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.create_issue = AsyncMock(
+            return_value=IssueRef(id="u1", title="t", identifier="VEN-3")
+        )
+        register_handlers(
+            tree,
+            backend,
+            guild_id=42,
+            thread_config=ThreadConfig(enabled=True, private=True, auto_archive_minutes=1440),
+        )
+
+        cmd = self._task_cmd(tree)
+        interaction = _make_interaction(user_id=7, guild_id=42)
+        interaction.response.defer = AsyncMock()
+        msg = MagicMock()
+        msg.create_thread = AsyncMock()  # the public path must NOT be used
+        interaction.followup.send = AsyncMock(return_value=msg)
+        thread = MagicMock()
+        thread.send = AsyncMock()
+        interaction.channel.create_thread = AsyncMock(return_value=thread)
+        await cmd.callback(interaction, title="t")  # type: ignore[attr-defined]
+
+        interaction.channel.create_thread.assert_awaited_once()
+        kwargs = interaction.channel.create_thread.call_args.kwargs
+        assert kwargs["type"] == discord.ChannelType.private_thread
+        assert kwargs["auto_archive_duration"] == 1440
+        msg.create_thread.assert_not_called()
+
+    async def test_thread_failure_does_not_break_task(self) -> None:
+        from discord import HTTPException
+
+        from discord_agent_secretary.threads import ThreadConfig
+
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.create_issue = AsyncMock(
+            return_value=IssueRef(id="u1", title="t", identifier="VEN-4")
+        )
+        register_handlers(
+            tree, backend, guild_id=42, thread_config=ThreadConfig(enabled=True)
+        )
+
+        cmd = self._task_cmd(tree)
+        interaction = _make_interaction(user_id=7, guild_id=42)
+        interaction.response.defer = AsyncMock()
+        msg = MagicMock()
+        msg.create_thread = AsyncMock(
+            side_effect=HTTPException(
+                response=MagicMock(status=403, reason="x"), message="no perms"
+            )
+        )
+        interaction.followup.send = AsyncMock(return_value=msg)
+        # The thread API blew up, but the command must still complete cleanly —
+        # the confirmation followup already went out.
+        await cmd.callback(interaction, title="t")  # type: ignore[attr-defined]
+        interaction.followup.send.assert_awaited()
+
+    async def test_enabled_keeps_main_channel_confirmation_contract(self) -> None:
+        # AC8: enabling threads must not change the existing main-channel reply.
+        from discord_agent_secretary.threads import ThreadConfig
+
+        client, tree = build_client()
+        backend = MagicMock()
+        backend.create_issue = AsyncMock(
+            return_value=IssueRef(id="u1", title="Fix bug", identifier="VEN-9")
+        )
+        register_handlers(
+            tree,
+            backend,
+            guild_id=42,
+            app_url="http://m.local:3000",
+            thread_config=ThreadConfig(enabled=True),
+        )
+
+        cmd = self._task_cmd(tree)
+        interaction = _make_interaction(user_id=7, guild_id=42)
+        interaction.response.defer = AsyncMock()
+        msg = self._msg_with_thread()
+        interaction.followup.send = AsyncMock(return_value=msg)
+        await cmd.callback(interaction, title="Fix bug")  # type: ignore[attr-defined]
+
+        confirmation = interaction.followup.send.call_args.args[0]
+        assert "✅ Создана задача" in confirmation
+        assert "[VEN-9]" in confirmation
+        assert "http://m.local:3000/venchur/issues/VEN-9" in confirmation

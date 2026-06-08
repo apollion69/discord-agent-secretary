@@ -33,9 +33,10 @@ _MAX_LIST = 8  # identifiers shown per bucket before "+N ещё"
 
 def _load_last_date(path: Path) -> str | None:
     try:
-        return json.loads(path.read_text(encoding="utf-8")).get("last_date")
+        value = json.loads(path.read_text(encoding="utf-8")).get("last_date")
     except (FileNotFoundError, json.JSONDecodeError, AttributeError):
         return None
+    return value if isinstance(value, str) else None
 
 
 def _save_last_date(path: Path, value: str) -> None:
