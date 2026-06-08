@@ -145,7 +145,7 @@ class TestProtocolAbcAlignment:
     def test_method_signatures_match(self) -> None:
         import inspect
 
-        methods = ("create_issue", "get_issue", "assign_issue", "update_status")
+        methods = ("create_issue", "get_issue", "assign_issue", "update_status", "add_comment")
         for name in methods:
             proto_sig = inspect.signature(getattr(IssueBackend, name))
             abc_sig = inspect.signature(getattr(IssueBackendBase, name))

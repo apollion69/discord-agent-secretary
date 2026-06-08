@@ -205,18 +205,21 @@ async def announce_task_thread(
     thread_config: ThreadConfig,
     description: str | None = None,
     priority: str | None = None,
+    thread_map: Any = None,
     log: logging.Logger | None = None,
 ) -> Any | None:
     """High-level shared step used by both the slash handler and the observer.
 
     No-op (returns ``None``) when threads are disabled or no announcement
     message exists. Otherwise builds the thread name/intro/allowed-mentions from
-    the issue ref + resolved pings and opens the thread best-effort.
+    the issue ref + resolved pings and opens the thread best-effort. When a
+    `thread_map` (anything with `.set(issue_id, thread_id)`) is supplied, the
+    issue↔thread mapping is recorded for bidirectional sync.
     """
     if not thread_config.enabled or message is None:
         return None
     display_title = getattr(ref, "title", None) or fallback_title
-    return await open_task_thread(
+    thread = await open_task_thread(
         message=message,
         channel=channel,
         name=build_thread_name(
@@ -238,6 +241,12 @@ async def announce_task_thread(
         auto_archive_minutes=thread_config.auto_archive_minutes,
         log=log,
     )
+    if thread_map is not None and thread is not None:
+        issue_id = getattr(ref, "id", "") or ""
+        thread_id = getattr(thread, "id", None)
+        if issue_id and isinstance(thread_id, int):
+            thread_map.set(issue_id, thread_id)
+    return thread
 
 
 async def open_task_thread(

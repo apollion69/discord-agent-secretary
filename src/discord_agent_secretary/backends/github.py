@@ -54,3 +54,8 @@ class GitHubBackend(IssueBackendBase):
 
     async def update_status(self, issue_id: str, status: str) -> IssueRef:  # pragma: no cover
         raise NotImplementedError
+
+    async def add_comment(
+        self, issue_id: str, content: str, *, on_behalf_of: str | None = None
+    ) -> None:  # pragma: no cover
+        raise NotImplementedError

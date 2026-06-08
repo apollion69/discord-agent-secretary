@@ -261,3 +261,13 @@ class MulticaBackend(IssueBackendBase):
             retry_on=(BackendTimeoutError,),
         )
         return self._parse_ref(raw)
+
+    async def add_comment(
+        self, issue_id: str, content: str, *, on_behalf_of: str | None = None
+    ) -> None:
+        # NOT retried: a partial first attempt may have posted the comment —
+        # retrying would risk a duplicate. The circuit breaker still applies.
+        env: dict[str, str] | None = None
+        if on_behalf_of:
+            env = {**os.environ, "MULTICA_ON_BEHALF_OF": on_behalf_of}
+        await self._invoke("issue", "comment", "add", issue_id, "--content", content, env=env)

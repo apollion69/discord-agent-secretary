@@ -208,6 +208,10 @@ class IssueBackend(Protocol):
 
     async def update_status(self, issue_id: str, status: str) -> IssueRef: ...
 
+    async def add_comment(
+        self, issue_id: str, content: str, *, on_behalf_of: str | None = None
+    ) -> None: ...
+
 
 class IssueBackendBase(ABC):
     """Optional ABC for backends that prefer inheritance over structural duck-typing.
@@ -235,3 +239,8 @@ class IssueBackendBase(ABC):
 
     @abstractmethod
     async def update_status(self, issue_id: str, status: str) -> IssueRef: ...
+
+    @abstractmethod
+    async def add_comment(
+        self, issue_id: str, content: str, *, on_behalf_of: str | None = None
+    ) -> None: ...

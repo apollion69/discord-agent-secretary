@@ -17,6 +17,7 @@ from discord_agent_secretary.threads import (
     VALID_AUTO_ARCHIVE,
     ThreadConfig,
     ThreadPings,
+    announce_task_thread,
     build_allowed_mentions,
     build_thread_intro,
     build_thread_name,
@@ -347,6 +348,70 @@ class TestOpenTaskThreadResilience:
             log=log,
         )
         log.warning.assert_called()
+
+
+class _Ref:
+    def __init__(self, id: str, identifier: str | None = None, title: str | None = None) -> None:
+        self.id = id
+        self.identifier = identifier
+        self.title = title
+
+
+class TestAnnounceTaskThread:
+    @staticmethod
+    def _msg(thread_id: int = 4242) -> MagicMock:
+        thread = MagicMock()
+        thread.id = thread_id
+        thread.send = AsyncMock()
+        msg = MagicMock()
+        msg.create_thread = AsyncMock(return_value=thread)
+        return msg
+
+    async def test_disabled_is_noop(self) -> None:
+        msg = self._msg()
+        result = await announce_task_thread(
+            message=msg,
+            channel=MagicMock(),
+            ref=_Ref("u1", "VEN-1"),
+            fallback_title="t",
+            app_url="",
+            pings=ThreadPings(),
+            thread_config=ThreadConfig(enabled=False),
+        )
+        assert result is None
+        msg.create_thread.assert_not_called()
+
+    async def test_enabled_opens_and_persists_map(self) -> None:
+        msg = self._msg(thread_id=4242)
+        tm = MagicMock()
+        result = await announce_task_thread(
+            message=msg,
+            channel=MagicMock(),
+            ref=_Ref("u1", "VEN-1", "Fix it"),
+            fallback_title="fallback",
+            app_url="http://m",
+            pings=ThreadPings(user_ids=(7,)),
+            thread_config=ThreadConfig(enabled=True),
+            thread_map=tm,
+        )
+        assert result is not None
+        name = msg.create_thread.call_args.kwargs["name"]
+        assert name.startswith("VEN-1")
+        tm.set.assert_called_once_with("u1", 4242)
+
+    async def test_no_thread_map_skips_persist(self) -> None:
+        msg = self._msg()
+        # No thread_map → just opens the thread, no persistence call.
+        result = await announce_task_thread(
+            message=msg,
+            channel=MagicMock(),
+            ref=_Ref("u1", "VEN-1"),
+            fallback_title="t",
+            app_url="",
+            pings=ThreadPings(),
+            thread_config=ThreadConfig(enabled=True),
+        )
+        assert result is not None
 
 
 class TestThreadConfigDefaults:

@@ -15,6 +15,7 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 import discord
 from discord import app_commands
@@ -32,8 +33,11 @@ from .handlers import register_handlers
 from .health import HealthcheckHandle, start_healthcheck
 from .logging_setup import configure_logging
 from .mention_scanner import MentionScanWorker
+from .message_router import register_message_dispatch
 from .pull_worker import ReviewPollWorker
 from .review_router import AutomatedReviewRouter, CliReviewBackend
+from .sync import parse_comment_event, route_comment_to_thread
+from .thread_map import ThreadMap
 from .threads import ThreadConfig
 from .webhook import (
     ReviewEvent,
@@ -233,7 +237,7 @@ async def _send_review_notification(
 
 
 def _log_background_failure(
-    future: Future[None],
+    future: Future[Any],
     *,
     action: str,
     issue_id: str,
@@ -293,15 +297,38 @@ def _issue_from_review_event(event: ReviewEvent) -> dict[str, object]:
 
 
 def _make_webhook_callback(
-    settings: object, client: discord.Client, state: _RunState
+    settings: object, client: discord.Client, state: _RunState, thread_map: object = None
 ) -> Callable[[bytes, str], None] | None:
     discord_review_channel_id = getattr(settings, "discord_review_channel_id", None)
-    if not discord_review_channel_id:
+    sync_enabled = bool(getattr(settings, "discord_thread_sync_enabled", False))
+    if not discord_review_channel_id and not (sync_enabled and thread_map is not None):
         return None
     multica_webhook_secret = getattr(settings, "multica_webhook_secret", "")
-    channel_id = discord_review_channel_id
+    channel_id = cast("int", discord_review_channel_id)
 
     def _on_webhook(body: bytes, signature: str) -> None:
+        # Inbound comment sync: post tracker comments into the mapped thread.
+        if sync_enabled and thread_map is not None:
+            c_event = parse_comment_event(
+                body, signature=signature, secret=multica_webhook_secret
+            )
+            if c_event is not None:
+                loop = state.loop
+                if loop is not None:
+                    comment_future = asyncio.run_coroutine_threadsafe(
+                        route_comment_to_thread(client, thread_map, c_event), loop
+                    )
+                    comment_future.add_done_callback(
+                        lambda f: _log_background_failure(
+                            f,
+                            action="comment sync",
+                            issue_id=c_event.issue_id,
+                            identifier=c_event.identifier,
+                        )
+                    )
+                return
+        if not discord_review_channel_id:
+            return
         event = parse_review_event(body, signature=signature, secret=multica_webhook_secret)
         if event is None:
             return
@@ -399,9 +426,11 @@ def main() -> int:
 
     backend = make_backend(settings)
 
-    client, tree = build_client(
-        enable_message_content=settings.discord_observer_enabled
+    # Both the observer and thread-reply sync read message bodies → privileged intent.
+    need_message_content = (
+        settings.discord_observer_enabled or settings.discord_thread_sync_enabled
     )
+    client, tree = build_client(enable_message_content=need_message_content)
     thread_cfg = ThreadConfig(
         enabled=settings.discord_thread_enabled,
         private=settings.discord_thread_private,
@@ -410,6 +439,10 @@ def main() -> int:
         ping_user_ids=tuple(settings.discord_thread_ping_user_ids),
         ping_role_ids=tuple(settings.discord_thread_ping_role_ids),
     )
+    # Persistent issue↔thread map — only needed by bidirectional sync.
+    thread_map: ThreadMap | None = None
+    if settings.discord_thread_sync_enabled:
+        thread_map = ThreadMap(Path(settings.discord_thread_map_path))
     # Persistent approval buttons: register the dynamic item so clicks are routed
     # by custom_id even after a restart (no in-memory View needed). Gate only on
     # the member map — the callback authorizes by member, and buttons posted in a
@@ -424,19 +457,25 @@ def main() -> int:
         member_map=settings.discord_member_map,
         thread_config=thread_cfg,
         cards_enabled=settings.discord_cards_enabled,
+        thread_map=thread_map,
     )
 
+    # One on_message dispatcher fans out to the observer and the sync handlers.
+    message_handlers: list[Callable[[discord.Message], object]] = []
     if settings.discord_observer_enabled and settings.discord_watch_channels:
-        from .observer import register_message_observer
+        from .observer import make_observer_handler
 
-        register_message_observer(
-            client,
-            backend=backend,
-            watch_channels=settings.discord_watch_channels,
-            triggers=settings.discord_observer_triggers,
-            app_url=settings.multica_app_url,
-            member_map=settings.discord_member_map,
-            thread_config=thread_cfg,
+        message_handlers.append(
+            make_observer_handler(
+                client,
+                backend=backend,
+                watch_channels=settings.discord_watch_channels,
+                triggers=settings.discord_observer_triggers,
+                app_url=settings.multica_app_url,
+                member_map=settings.discord_member_map,
+                thread_config=thread_cfg,
+                thread_map=thread_map,
+            )
         )
         logger.info(
             "passive observer enabled",
@@ -450,6 +489,25 @@ def main() -> int:
             "DISCORD_OBSERVER_ENABLED is true but DISCORD_WATCH_CHANNELS is empty "
             "— observer will not run"
         )
+
+    if settings.discord_thread_sync_enabled and thread_map is not None:
+        from .sync import make_thread_reply_handler
+
+        message_handlers.append(
+            make_thread_reply_handler(
+                client,
+                backend=backend,
+                thread_map=thread_map,
+                member_map=settings.discord_member_map,
+            )
+        )
+        logger.info(
+            "thread↔issue sync enabled",
+            extra={"thread_map_path": settings.discord_thread_map_path},
+        )
+
+    if message_handlers:
+        register_message_dispatch(client, message_handlers)  # type: ignore[arg-type]
 
     state = _RunState()
 
@@ -488,7 +546,7 @@ def main() -> int:
                 "MULTICA_WEBHOOK_SECRET) — set the secret before disabling dry_run"
             )
 
-    webhook_cb = _make_webhook_callback(settings, client, state)
+    webhook_cb = _make_webhook_callback(settings, client, state, thread_map)
 
     poll_worker: ReviewPollWorker | None = None
     if settings.discord_review_channel_id:

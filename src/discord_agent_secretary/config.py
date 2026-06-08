@@ -170,6 +170,20 @@ class Settings(BaseSettings):
         description="CSV of message prefixes that trigger the observer (case-insensitive).",
     )
 
+    # === Bidirectional thread↔issue sync ===
+    discord_thread_sync_enabled: bool = Field(
+        default=False,
+        description=(
+            "Mirror comments both ways: tracker comment → task thread (via webhook) "
+            "and thread reply → issue comment. Enabling this turns ON the privileged "
+            "MESSAGE CONTENT intent (to read thread replies). Opt-in; default off."
+        ),
+    )
+    discord_thread_map_path: str = Field(
+        default="/opt/discord-secretary/thread-map.json",
+        description="Path to the persistent issue↔thread map used by sync.",
+    )
+
     # === Components V2 cards ===
     discord_cards_enabled: bool = Field(
         default=False,

@@ -185,6 +185,7 @@ def register_handlers(
     member_map: dict[str, str] | None = None,
     thread_config: ThreadConfig | None = None,
     cards_enabled: bool = False,
+    thread_map: Any = None,
 ) -> None:
     """Attach `/task`, `/status`, `/assign` to `tree`.
 
@@ -315,6 +316,7 @@ def register_handlers(
                 thread_config=_thread_config,
                 description=description,
                 priority=priority.value if priority else None,
+                thread_map=thread_map,
             )
 
     @tree.command(

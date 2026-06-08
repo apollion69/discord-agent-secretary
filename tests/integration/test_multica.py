@@ -183,6 +183,43 @@ class TestAssignIssue:
         assert "assign" in argv and "--to" in argv and "bob" in argv
 
 
+class TestAddComment:
+    async def test_invokes_comment_add_cli(self):
+        proc = _FakeProc(stdout=b"ok")
+        captured: list[tuple[Any, ...]] = []
+        with _patch_spawn(proc, captured):
+            backend = MulticaBackend(cli_path="multica")
+            await backend.add_comment("VEN-3", "looks good")
+        argv = list(captured[0])
+        assert argv[1:4] == ["issue", "comment", "add"]
+        assert "VEN-3" in argv
+        assert "--content" in argv and "looks good" in argv
+
+    async def test_on_behalf_of_sets_env(self):
+        proc = _FakeProc(stdout=b"ok")
+        seen: dict[str, Any] = {}
+
+        async def _fake(*_args: Any, **kwargs: Any) -> _FakeProc:
+            seen["env"] = kwargs.get("env")
+            return proc
+
+        with patch(
+            "discord_agent_secretary.backends.multica.asyncio.create_subprocess_exec",
+            side_effect=_fake,
+        ):
+            backend = MulticaBackend(cli_path="multica")
+            await backend.add_comment("VEN-3", "hi", on_behalf_of="member-uuid-7")
+        assert seen["env"] is not None
+        assert seen["env"]["MULTICA_ON_BEHALF_OF"] == "member-uuid-7"
+
+    async def test_cli_error_propagates(self):
+        proc = _FakeProc(stderr=b"nope", returncode=1)
+        with _patch_spawn(proc):
+            backend = MulticaBackend(cli_path="multica")
+            with pytest.raises(MulticaCliError):
+                await backend.add_comment("VEN-3", "x")
+
+
 class TestPreambleStripping:
     async def test_header_line_before_json_is_dropped(self):
         proc = _FakeProc(

@@ -93,6 +93,7 @@ class ObserverContext:
     thread_config: ThreadConfig
     reverse_member_map: dict[str, str] = field(default_factory=dict)
     extra_ping_user_ids: tuple[int, ...] = ()
+    thread_map: Any = None
 
 
 async def _safe_edit(
@@ -197,6 +198,7 @@ class TaskConfirmView(discord.ui.View):
             thread_config=ctx.thread_config,
             description=_description_from_parsed(ctx.parsed),
             priority=ctx.parsed.priority,
+            thread_map=ctx.thread_map,
         )
 
 
@@ -211,6 +213,7 @@ async def handle_observed_message(
     member_map: dict[str, str],
     reverse_member_map: dict[str, str],
     thread_config: ThreadConfig,
+    thread_map: Any = None,
 ) -> TaskConfirmView | None:
     """Core observer logic (decoupled from the gateway for unit testing).
 
@@ -242,6 +245,7 @@ async def handle_observed_message(
         thread_config=thread_config,
         reverse_member_map=reverse_member_map,
         extra_ping_user_ids=extra,
+        thread_map=thread_map,
     )
     view = TaskConfirmView(ctx)
     try:
@@ -257,7 +261,7 @@ async def handle_observed_message(
     return view
 
 
-def register_message_observer(
+def make_observer_handler(
     client: discord.Client,
     *,
     backend: IssueBackend,
@@ -266,18 +270,19 @@ def register_message_observer(
     app_url: str,
     member_map: dict[str, str],
     thread_config: ThreadConfig,
-) -> None:
-    """Wire the on_message observer onto `client`.
+    thread_map: Any = None,
+) -> Callable[[discord.Message], Awaitable[None]]:
+    """Build the observer's per-message coroutine (name-agnostic).
 
-    Only call this when the observer is enabled — it implies the MESSAGE CONTENT
-    intent is on. The reverse member map is precomputed once.
+    Returned so a single shared `on_message` dispatcher can combine the observer
+    with other message handlers (e.g. thread-reply sync) — discord.py allows only
+    one `on_message`, so they must not each register their own.
     """
     watch = {int(c) for c in watch_channels}
     reverse = {uuid: did for did, uuid in (member_map or {}).items()}
     _triggers = tuple(triggers) or DEFAULT_TRIGGERS
 
-    @client.event
-    async def on_message(message: discord.Message) -> None:
+    async def handler(message: discord.Message) -> None:
         user = client.user
         await handle_observed_message(
             message,
@@ -289,4 +294,39 @@ def register_message_observer(
             member_map=member_map or {},
             reverse_member_map=reverse,
             thread_config=thread_config,
+            thread_map=thread_map,
         )
+
+    return handler
+
+
+def register_message_observer(
+    client: discord.Client,
+    *,
+    backend: IssueBackend,
+    watch_channels: Sequence[int],
+    triggers: Sequence[str],
+    app_url: str,
+    member_map: dict[str, str],
+    thread_config: ThreadConfig,
+    thread_map: Any = None,
+) -> None:
+    """Wire the observer as the sole on_message handler on `client`.
+
+    Convenience for an observer-only deployment. When other message handlers are
+    needed too, use `make_observer_handler` + `message_router`.
+    """
+    handler = make_observer_handler(
+        client,
+        backend=backend,
+        watch_channels=watch_channels,
+        triggers=triggers,
+        app_url=app_url,
+        member_map=member_map,
+        thread_config=thread_config,
+        thread_map=thread_map,
+    )
+
+    @client.event
+    async def on_message(message: discord.Message) -> None:
+        await handler(message)

@@ -30,6 +30,19 @@ and the project follows [Semantic Versioning](https://semver.org/).
   `docs/threat-model.md`. Default off.
 - `threads.announce_task_thread` — a shared high-level helper now used by both the
   `/task` slash command and the observer to open + populate the task thread.
+- **Bidirectional thread↔issue sync** (`sync.py`, `thread_map.py`,
+  `message_router.py`, `DISCORD_THREAD_SYNC_ENABLED`): mirror comments both ways —
+  a Multica `comment_created` webhook is posted into the mapped task thread, and a
+  human reply inside a task thread is added as an issue comment
+  (`backend.add_comment`, attributed via `DISCORD_MEMBER_MAP`). A persistent
+  issue↔thread map (`thread_map.py`, atomic JSON) is recorded when a thread opens.
+  Echo-loop guard: outbound comments carry a `[via-discord]` marker that the
+  inbound router skips; bot-authored thread posts are ignored by the outbound
+  handler. A single `on_message` dispatcher (`message_router.py`) lets the observer
+  and sync coexist. Adds `IssueBackend.add_comment` (Multica:
+  `issue comment add … --content`; stubs raise NotImplementedError). Reading thread
+  replies needs the MESSAGE CONTENT intent (shared with the observer gate).
+  Default off.
 
 ### Changed
 
