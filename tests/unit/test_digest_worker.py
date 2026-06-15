@@ -62,6 +62,21 @@ class TestSchedule:
         w = self._worker(tmp_path, now)
         assert w._due(now, "2026-05-29") is False
 
+    def test_not_due_on_saturday_after_hour(self, tmp_path):
+        now = datetime(2026, 6, 13, 9, 30, tzinfo=ZoneInfo("Europe/Moscow"))
+        w = self._worker(tmp_path, now)
+        assert w._due(now, "2026-06-12") is False
+
+    def test_not_due_on_sunday_after_hour(self, tmp_path):
+        now = datetime(2026, 6, 14, 9, 30, tzinfo=ZoneInfo("Europe/Moscow"))
+        w = self._worker(tmp_path, now)
+        assert w._due(now, "2026-06-12") is False
+
+    def test_monday_due_after_friday_digest(self, tmp_path):
+        now = datetime(2026, 6, 15, 9, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+        w = self._worker(tmp_path, now)
+        assert w._due(now, "2026-06-12") is True
+
     def test_sleep_capped_at_one_hour(self, tmp_path):
         now = datetime(2026, 5, 29, 0, 0, tzinfo=ZoneInfo("Europe/Moscow"))
         w = self._worker(tmp_path, now)
@@ -132,3 +147,37 @@ class TestBuild:
         assert "Выполнено за 24ч: 1" in msg  # only VEN-C
         assert "VEN-A" in msg and "VEN-C" in msg
         assert "VEN-B" not in msg and "VEN-D" not in msg
+
+    async def test_monday_build_uses_previous_digest_window_and_names_weekend(
+        self, tmp_path, monkeypatch
+    ):
+        tz = ZoneInfo("Europe/Moscow")
+        now = datetime(2026, 6, 15, 9, 0, tzinfo=tz)
+        friday_after_digest = datetime(2026, 6, 12, 10, 0, tzinfo=tz).astimezone(UTC).isoformat()
+        friday_before_digest = datetime(2026, 6, 12, 8, 0, tzinfo=tz).astimezone(UTC).isoformat()
+        lists = {
+            "in_review": [_iss("VEN-A", origin_type="autopilot")],
+            "done": [
+                _iss("VEN-B", origin_type="autopilot", updated_at=friday_after_digest),
+                _iss("VEN-C", origin_type="autopilot", updated_at=friday_before_digest),
+            ],
+        }
+        w = DigestWorker(
+            cli_path="multica",
+            channel_id=1,
+            app_url=APP,
+            tz="Europe/Moscow",
+            digest_hour=9,
+            state_path=tmp_path / "d.json",
+            now_fn=lambda: now,
+        )
+
+        async def fake_list(status):
+            return lists[status]
+
+        monkeypatch.setattr(w, "_list", fake_list)
+        msg = await w.build(last_date="2026-06-12")
+        assert "Сводка авто-задач за выходные (13.06.2026-14.06.2026)" in msg
+        assert "Выполнено с прошлой сводки: 1" in msg
+        assert "VEN-B" in msg
+        assert "VEN-C" not in msg

@@ -5,6 +5,15 @@ All notable changes to `discord-agent-secretary` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-06-15
+
+### Changed
+
+- **Autopilot digest weekends**: the daily digest now skips Saturday and Sunday,
+  then posts a Monday catch-up labelled with the weekend dates. The completed
+  bucket covers work since the previous successful digest so weekend completions
+  are not lost.
+
 ## [0.4.0] - 2026-06-08
 
 > Modernization bundle (research-driven). Every item is opt-in; default config

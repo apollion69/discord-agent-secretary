@@ -170,6 +170,10 @@ per task. Requires the Multica server to expose `origin_type` in the issue list
 (added 2026-05). Human/operator review tasks (no autopilot origin) are still
 notified normally.
 
+The digest posts only on weekdays in `TZ`. Saturday and Sunday are skipped; the
+next Monday digest is labelled with the weekend dates and counts completed
+autopilot work since the previous successful digest.
+
 ```dotenv
 DISCORD_REVIEW_CHANNEL_ID=1234567890
 MULTICA_REVIEW_ROUTING_MODE=off          # off | subscribe | assign

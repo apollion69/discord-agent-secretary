@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -59,6 +59,15 @@ def _parse_ts(value: Any) -> datetime | None:
         return None
 
 
+def _parse_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def _link(issue: dict[str, Any], app_url: str) -> str:
     ident = str(issue.get("identifier") or issue.get("id", "?"))
     issue_id = str(issue.get("id", ""))
@@ -78,15 +87,18 @@ def format_digest(
     in_review: list[dict[str, Any]],
     done_recent: list[dict[str, Any]],
     app_url: str,
+    *,
+    title: str = "Сводка авто-задач за сутки",
+    done_label: str = "Выполнено за 24ч",
 ) -> str | None:
     """Build the digest message, or None if there is nothing to report."""
     if not in_review and not done_recent:
         return None
     return (
-        "\U0001f5d2️ **Сводка авто-задач за сутки**\n"
+        f"\U0001f5d2️ **{title}**\n"
         + _bucket_line("В review", in_review, app_url)
         + "\n"
-        + _bucket_line("Выполнено за 24ч", done_recent, app_url)
+        + _bucket_line(done_label, done_recent, app_url)
         + "\n_Уведомления по отдельным авто-задачам отключены._"
     )
 
@@ -120,6 +132,27 @@ class DigestWorker:
         # Injectable clock for tests; defaults to real tz-aware now.
         self._now = now_fn or (lambda: datetime.now(self._tz))
 
+    def _completed_cutoff(self, now: datetime, last_date: str | None) -> datetime:
+        previous = _parse_date(last_date)
+        if now.weekday() == 0 and previous is not None and previous < now.date() - timedelta(days=1):
+            local_cutoff = datetime.combine(previous, time(hour=self._hour), tzinfo=self._tz)
+            return local_cutoff.astimezone(UTC)
+        return now.astimezone(UTC) - _WINDOW
+
+    def _digest_text_options(self, now: datetime, last_date: str | None) -> dict[str, str]:
+        previous = _parse_date(last_date)
+        if now.weekday() != 0 or previous is None or previous >= now.date() - timedelta(days=1):
+            return {}
+        saturday = now.date() - timedelta(days=2)
+        sunday = now.date() - timedelta(days=1)
+        return {
+            "title": (
+                "Сводка авто-задач за выходные "
+                f"({saturday.strftime('%d.%m.%Y')}-{sunday.strftime('%d.%m.%Y')})"
+            ),
+            "done_label": "Выполнено с прошлой сводки",
+        }
+
     async def _list(self, status: str) -> list[dict[str, Any]]:
         data = await run_cli_json(
             self._cli_path, "issue", "list", "--status", status,
@@ -128,9 +161,10 @@ class DigestWorker:
         items = data.get("issues", []) if isinstance(data, dict) else (data or [])
         return [i for i in items if isinstance(i, dict)]
 
-    async def build(self) -> str | None:
+    async def build(self, *, last_date: str | None = None) -> str | None:
+        now = self._now()
         in_review = [i for i in await self._list("in_review") if _is_autopilot(i)]
-        cutoff = datetime.now(UTC) - _WINDOW
+        cutoff = self._completed_cutoff(now, last_date)
         done_recent = [
             i
             for i in await self._list("done")
@@ -138,7 +172,7 @@ class DigestWorker:
             and (ts := _parse_ts(i.get("updated_at"))) is not None
             and ts >= cutoff
         ]
-        return format_digest(in_review, done_recent, self._app_url)
+        return format_digest(in_review, done_recent, self._app_url, **self._digest_text_options(now, last_date))
 
     async def _post(self, client: discord.Client, message: str) -> bool:
         """Return True only if the digest was actually delivered."""
@@ -156,6 +190,8 @@ class DigestWorker:
         return True
 
     def _due(self, now: datetime, last: str | None) -> bool:
+        if now.weekday() in {5, 6}:
+            return False
         return now.hour >= self._hour and last != now.date().isoformat()
 
     def _sleep_seconds(self, now: datetime) -> float:
@@ -173,7 +209,7 @@ class DigestWorker:
             try:
                 now = self._now()
                 if self._due(now, last):
-                    message = await self.build()
+                    message = await self.build(last_date=last)
                     today = now.date().isoformat()
                     if message is None:
                         logger.info("digest_worker: nothing to report", extra={"date": today})
