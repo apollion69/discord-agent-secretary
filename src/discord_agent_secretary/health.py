@@ -30,6 +30,10 @@ OnWebhook = Callable[[bytes, str], None]
 Liveness = Callable[[], "dict[str, str]"]
 
 
+class _ReusableThreadingTCPServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+
+
 @dataclass(frozen=True, slots=True)
 class HealthcheckHandle:
     """Return value from `start_healthcheck` — owns the server + thread.
@@ -164,7 +168,7 @@ def start_healthcheck(
         return None
 
     handler = _make_handler(is_ready, webhook_callback, liveness, rate_limit)
-    server = socketserver.ThreadingTCPServer((bind, port), handler)
+    server = _ReusableThreadingTCPServer((bind, port), handler)
     server.daemon_threads = True
     actual_port = server.server_address[1]
 

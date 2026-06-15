@@ -104,6 +104,16 @@ class TestStartHealthcheck:
         finally:
             handle.shutdown()
 
+    def test_server_allows_fast_restart_rebind(self) -> None:
+        port = _free_port()
+        handle = start_healthcheck(port=port, is_ready=lambda: True, bind="127.0.0.1")
+        try:
+            assert handle is not None
+            assert handle.server.allow_reuse_address is True
+        finally:
+            assert handle is not None
+            handle.shutdown()
+
     def test_serve_loop_crash_is_logged(self, caplog) -> None:
         # The daemon thread wrapping `serve_forever` must log CRITICAL on
         # any exception so the operator notices instead of silently

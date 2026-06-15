@@ -5,6 +5,13 @@ All notable changes to `discord-agent-secretary` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.3] - 2026-06-15
+
+### Fixed
+
+- Healthcheck binds now enable address reuse so fast systemd restarts do not
+  trip over a still-releasing probe socket with `Address already in use`.
+
 ## [0.4.2] - 2026-06-15
 
 ### Added
