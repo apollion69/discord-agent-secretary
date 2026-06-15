@@ -23,6 +23,7 @@ import discord
 
 from .backends import BackendError, IssueBackend
 from .parsers import ParsedTask, parse_task
+from .task_routing import RoutedTask, create_secretary_task
 from .threads import (
     ThreadConfig,
     announce_task_thread,
@@ -94,6 +95,8 @@ class ObserverContext:
     reverse_member_map: dict[str, str] = field(default_factory=dict)
     extra_ping_user_ids: tuple[int, ...] = ()
     thread_map: Any = None
+    default_assignee: str = ""
+    execution_assignee: str = ""
 
 
 async def _safe_edit(
@@ -165,21 +168,27 @@ class TaskConfirmView(discord.ui.View):
         self.stop()
         ctx = self.ctx
         try:
-            ref = await ctx.backend.create_issue(
+            routed = await create_secretary_task(
+                ctx.backend,
                 title=ctx.parsed.title,
                 description=_description_from_parsed(ctx.parsed),
                 priority=ctx.parsed.priority,
-                assignee=ctx.parsed.assignee,
+                explicit_assignee=ctx.parsed.assignee,
+                default_assignee=ctx.default_assignee,
+                execution_assignee=ctx.execution_assignee,
                 on_behalf_of=ctx.on_behalf_of,
             )
         except BackendError as exc:
             logger.warning("observer: task create failed", extra={"detail": str(exc)})
             await _safe_edit(interaction, content=_USER_FAIL, view=self)
             return
+        ref = routed.parent
         link = _issue_link(ref.identifier or "", ref.id, ctx.app_url)
         safe_title = discord.utils.escape_markdown(ref.title or ctx.parsed.title)
         await _safe_edit(
-            interaction, content=f"✅ Создана задача **{safe_title}** {link}", view=self
+            interaction,
+            content=_build_observer_created_message(safe_title, link, routed),
+            view=self,
         )
         pings = resolve_thread_pings(
             invoker_id=ctx.author_id,
@@ -202,6 +211,23 @@ class TaskConfirmView(discord.ui.View):
         )
 
 
+def _build_observer_created_message(
+    safe_title: str,
+    link: str,
+    routed: RoutedTask,
+) -> str:
+    if routed.child is None:
+        suffix = "" if routed.warning is None else " — ⚠️ маршрут ко второму скводу не создан"
+        return f"✅ Создана задача **{safe_title}** {link}{suffix}"
+    child_ref = routed.child.identifier or routed.child.id
+    if routed.degraded:
+        return (
+            f"⚠️ Создана задача **{safe_title}** {link}, "
+            f"execution-задача `{child_ref}` создана, но координация неполная."
+        )
+    return f"✅ Создана задача **{safe_title}** {link}; execution-задача `{child_ref}`"
+
+
 async def handle_observed_message(
     message: Any,
     *,
@@ -214,6 +240,8 @@ async def handle_observed_message(
     reverse_member_map: dict[str, str],
     thread_config: ThreadConfig,
     thread_map: Any = None,
+    default_assignee: str = "",
+    execution_assignee: str = "",
 ) -> TaskConfirmView | None:
     """Core observer logic (decoupled from the gateway for unit testing).
 
@@ -246,6 +274,8 @@ async def handle_observed_message(
         reverse_member_map=reverse_member_map,
         extra_ping_user_ids=extra,
         thread_map=thread_map,
+        default_assignee=default_assignee,
+        execution_assignee=execution_assignee,
     )
     view = TaskConfirmView(ctx)
     try:
@@ -271,6 +301,8 @@ def make_observer_handler(
     member_map: dict[str, str],
     thread_config: ThreadConfig,
     thread_map: Any = None,
+    default_assignee: str = "",
+    execution_assignee: str = "",
 ) -> Callable[[discord.Message], Awaitable[None]]:
     """Build the observer's per-message coroutine (name-agnostic).
 
@@ -295,6 +327,8 @@ def make_observer_handler(
             reverse_member_map=reverse,
             thread_config=thread_config,
             thread_map=thread_map,
+            default_assignee=default_assignee,
+            execution_assignee=execution_assignee,
         )
 
     return handler
@@ -310,6 +344,8 @@ def register_message_observer(
     member_map: dict[str, str],
     thread_config: ThreadConfig,
     thread_map: Any = None,
+    default_assignee: str = "",
+    execution_assignee: str = "",
 ) -> None:
     """Wire the observer as the sole on_message handler on `client`.
 
@@ -325,6 +361,8 @@ def register_message_observer(
         member_map=member_map,
         thread_config=thread_config,
         thread_map=thread_map,
+        default_assignee=default_assignee,
+        execution_assignee=execution_assignee,
     )
 
     @client.event

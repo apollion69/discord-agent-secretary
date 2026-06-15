@@ -218,6 +218,7 @@ class MulticaBackend(IssueBackendBase):
         description: str | None = None,
         priority: str | None = None,
         assignee: str | None = None,
+        parent: str | None = None,
         on_behalf_of: str | None = None,
     ) -> IssueRef:
         # NOT retried: a partial first attempt may have created an issue —
@@ -229,6 +230,8 @@ class MulticaBackend(IssueBackendBase):
             args += ["--priority", priority]
         if assignee:
             args += ["--assignee", assignee]
+        if parent:
+            args += ["--parent", parent]
         # Act-as-member: forward MULTICA_ON_BEHALF_OF only when set, so other
         # calls inherit the parent env unchanged (env=None means "inherit").
         env: dict[str, str] | None = None

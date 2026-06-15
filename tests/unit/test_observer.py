@@ -154,6 +154,38 @@ class TestTaskConfirmView:
         interaction.response.edit_message.assert_awaited()  # confirmation shown
         interaction.message.create_thread.assert_awaited_once()  # thread opened
 
+    async def test_confirm_without_assignee_uses_two_squad_routing(self) -> None:
+        ctx = ObserverContext(
+            backend=MagicMock(),
+            parsed=ParsedTask(title="Audit services", priority="medium"),
+            author_id=7,
+            on_behalf_of="member-7",
+            app_url="http://m.local",
+            thread_config=ThreadConfig(),
+            default_assignee="Claude",
+            execution_assignee="GPT-5.5",
+        )
+        ctx.backend.create_issue = AsyncMock(
+            side_effect=[
+                IssueRef(id="parent-uuid", title="Audit services", identifier="VEN-5"),
+                IssueRef(id="child-uuid", title="Execute: Audit services", identifier="VEN-6"),
+            ]
+        )
+        ctx.backend.add_comment = AsyncMock()
+        view = TaskConfirmView(ctx)
+        interaction = _confirm_interaction()
+        await view._on_confirm(interaction)
+
+        assert ctx.backend.create_issue.await_count == 2
+        parent_call, child_call = ctx.backend.create_issue.await_args_list
+        assert parent_call.kwargs["assignee"] == "Claude"
+        assert child_call.kwargs["assignee"] == "GPT-5.5"
+        assert child_call.kwargs["parent"] == "parent-uuid"
+        ctx.backend.add_comment.assert_awaited_once()
+        edited = interaction.response.edit_message.await_args.kwargs["content"]
+        assert "VEN-5" in edited
+        assert "VEN-6" in edited
+
     async def test_confirm_without_thread_config_skips_thread(self) -> None:
         ctx = self._ctx(thread_enabled=False)
         ctx.backend.create_issue = AsyncMock(return_value=IssueRef(id="u1", identifier="VEN-2"))

@@ -79,6 +79,45 @@ class TestIssueRefImmutability:
         assert ref.title is None
 
 
+class TestMulticaCreateIssueArgs:
+    async def test_create_issue_supports_parent_and_assignee(self, monkeypatch) -> None:
+        backend = MulticaBackend(cli_path="multica")
+        calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+        async def fake_invoke(*args: str, **kwargs: object) -> bytes:
+            calls.append((args, kwargs))
+            return b'{"id":"child-uuid","identifier":"VEN-2","title":"child"}'
+
+        monkeypatch.setattr(backend, "_invoke", fake_invoke)
+
+        ref = await backend.create_issue(
+            "child",
+            description="body",
+            priority="medium",
+            assignee="GPT-5.5",
+            parent="parent-uuid",
+        )
+
+        assert ref.id == "child-uuid"
+        args, _kwargs = calls[0]
+        assert args == (
+            "issue",
+            "create",
+            "--title",
+            "child",
+            "--output",
+            "json",
+            "--description",
+            "body",
+            "--priority",
+            "medium",
+            "--assignee",
+            "GPT-5.5",
+            "--parent",
+            "parent-uuid",
+        )
+
+
 class TestMakeBackend:
     def test_default_returns_multica(self, clean_settings) -> None:
         s = Settings(_env_file=None)

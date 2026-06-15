@@ -199,6 +199,7 @@ class IssueBackend(Protocol):
         description: str | None = None,
         priority: str | None = None,
         assignee: str | None = None,
+        parent: str | None = None,
         on_behalf_of: str | None = None,
     ) -> IssueRef: ...
 
@@ -228,6 +229,7 @@ class IssueBackendBase(ABC):
         description: str | None = None,
         priority: str | None = None,
         assignee: str | None = None,
+        parent: str | None = None,
         on_behalf_of: str | None = None,
     ) -> IssueRef: ...
 

@@ -5,6 +5,26 @@ All notable changes to `discord-agent-secretary` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] - 2026-06-15
+
+### Added
+
+- **Default two-squad routing for secretary tasks**: `/task` requests without an
+  explicit assignee now create a lead/audit parent issue assigned to
+  `MULTICA_DEFAULT_ASSIGNEE` (`Claude` by default) and a child execution issue
+  assigned to `MULTICA_EXECUTION_ASSIGNEE` (`GPT-5.5` by default). The parent
+  receives a coordination comment that tells the execution squad to post
+  commands, actions, findings, blockers, and evidence back to the parent, while
+  the lead/audit squad owns review and user closeout.
+
+### Fixed
+
+- `MULTICA_DEFAULT_ASSIGNEE` is now actually applied to bot-created Multica
+  tasks that do not specify an explicit assignee.
+- Two-squad routing failures are no longer silent: child creation or
+  coordination-comment failures produce a warning-shaped Discord response and a
+  best-effort failure comment on the parent issue.
+
 ## [0.4.1] - 2026-06-15
 
 ### Changed

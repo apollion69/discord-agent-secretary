@@ -22,6 +22,11 @@ class TestSettingsDefaults:
         # Default is empty: backend factory raises a clear error if needed and missing.
         assert s.multica_workspace_id == ""
 
+    def test_default_two_squad_routing_targets(self, clean_settings):
+        s = Settings(_env_file=None)
+        assert s.multica_default_assignee == "Claude"
+        assert s.multica_execution_assignee == "GPT-5.5"
+
     def test_backend_aliases_accepted(self, monkeypatch, clean_settings):
         for name in ("multica", "github", "linear", "jira"):
             monkeypatch.setenv("BACKEND", name)
@@ -85,6 +90,13 @@ class TestSettingsFromEnv:
         monkeypatch.setenv("log_level", "WARNING")
         s = Settings(_env_file=None)
         assert s.log_level == "WARNING"
+
+    def test_two_squad_routing_targets_can_be_overridden(self, monkeypatch, clean_settings):
+        monkeypatch.setenv("MULTICA_DEFAULT_ASSIGNEE", "Lead Squad")
+        monkeypatch.setenv("MULTICA_EXECUTION_ASSIGNEE", "Execution Squad")
+        s = Settings(_env_file=None)
+        assert s.multica_default_assignee == "Lead Squad"
+        assert s.multica_execution_assignee == "Execution Squad"
 
 
 class TestSettingsValidation:

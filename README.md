@@ -101,6 +101,25 @@ MULTICA_WORKSPACE_ID=your-uuid   # from `multica workspace list`
 Install the Multica CLI from [github.com/multica-ai/multica/releases](https://github.com/multica-ai/multica/releases)
 or via Homebrew: `brew install multica-ai/tap/multica`.
 
+#### Default two-squad routing
+
+When a secretary `/task` has no explicit `assignee`, the Multica backend creates
+a lead/audit parent issue and a child execution issue:
+
+```dotenv
+MULTICA_DEFAULT_ASSIGNEE=Claude
+MULTICA_EXECUTION_ASSIGNEE=GPT-5.5
+```
+
+The parent issue is assigned to `MULTICA_DEFAULT_ASSIGNEE`; the child issue is
+created with `--parent <parent-id>` and assigned to
+`MULTICA_EXECUTION_ASSIGNEE`. A coordination comment on the parent records the
+handoff contract: lead/audit owns review and user closeout, execution posts
+commands, actions, findings, blockers, and evidence back to the parent.
+
+If a user explicitly passes `assignee`, the bot keeps the old single-issue
+behavior and does not create the execution child.
+
 #### Member attribution (`DISCORD_MEMBER_MAP`)
 
 By default, issues created via `/task` are attributed to the bot's token owner.

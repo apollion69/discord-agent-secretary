@@ -30,6 +30,7 @@ from .backends import (
     IssueBackend,
 )
 from .cards import build_task_card
+from .task_routing import RoutedTask, create_secretary_task
 from .threads import (
     ThreadConfig,
     announce_task_thread,
@@ -175,6 +176,27 @@ async def _safe_invoke(
     return None
 
 
+def _build_task_created_message(
+    safe_title: str,
+    ref_text: str,
+    routed: RoutedTask,
+) -> str:
+    if routed.child is None:
+        suffix = "" if routed.warning is None else " — ⚠️ маршрут ко второму скводу не создан"
+        return f"✅ Создана задача **{safe_title}** {ref_text}{suffix}"
+
+    child_ref = routed.child.identifier or routed.child.id
+    if routed.degraded:
+        return (
+            f"⚠️ Создана задача **{safe_title}** {ref_text}, "
+            f"execution-задача `{child_ref}` создана, но координация неполная."
+        )
+    return (
+        f"✅ Создана задача **{safe_title}** {ref_text}; "
+        f"execution-задача `{child_ref}`"
+    )
+
+
 def register_handlers(
     tree: app_commands.CommandTree,
     backend: IssueBackend,
@@ -186,6 +208,8 @@ def register_handlers(
     thread_config: ThreadConfig | None = None,
     cards_enabled: bool = False,
     thread_map: Any = None,
+    default_assignee: str = "",
+    execution_assignee: str = "",
 ) -> None:
     """Attach `/task`, `/status`, `/assign` to `tree`.
 
@@ -203,6 +227,8 @@ def register_handlers(
     _app_url = app_url.rstrip("/")
     _member_map = member_map or {}
     _thread_config = thread_config or ThreadConfig()
+    _default_assignee = default_assignee
+    _execution_assignee = execution_assignee
     # Reverse map (Multica member UUID -> Discord id) so a thread can ping the
     # assignee when it was given as a known member UUID — no backend call.
     _reverse_member_map = {uuid: did for did, uuid in _member_map.items()}
@@ -262,19 +288,23 @@ def register_handlers(
                 "task will be attributed to the token owner",
                 extra=_ctx_extra(interaction),
             )
-        ref = await _safe_invoke(
+        routed = await _safe_invoke(
             interaction,
-            backend.create_issue(
+            create_secretary_task(
+                backend,
                 title=title,
                 description=description,
                 priority=priority.value if priority else None,
-                assignee=assignee,
+                explicit_assignee=assignee,
+                default_assignee=_default_assignee,
+                execution_assignee=_execution_assignee,
                 on_behalf_of=on_behalf_of,
             ),
             label="create_issue",
         )
-        if ref is None:
+        if routed is None:
             return
+        ref = routed.parent
         safe_title = discord.utils.escape_markdown(getattr(ref, "title", None) or title)
         identifier = ref.identifier
         if _app_url and ref.id:
@@ -282,7 +312,7 @@ def register_handlers(
             ref_text = f"[{identifier or ref.id}](<{issue_url}>)"
         else:
             ref_text = f"`{identifier or ref.id}`"
-        if cards_enabled:
+        if cards_enabled and routed.child is None and not routed.degraded:
             message = await _safe_followup(
                 interaction,
                 view=build_task_card(
@@ -295,7 +325,7 @@ def register_handlers(
         else:
             message = await _safe_followup(
                 interaction,
-                f"✅ Создана задача **{safe_title}** {ref_text}",
+                _build_task_created_message(safe_title, ref_text, routed),
             )
         # Venture thread-per-task: best-effort, never fails the command.
         if _thread_config.enabled and message is not None:

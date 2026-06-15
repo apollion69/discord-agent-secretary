@@ -458,6 +458,8 @@ def main() -> int:
         thread_config=thread_cfg,
         cards_enabled=settings.discord_cards_enabled,
         thread_map=thread_map,
+        default_assignee=settings.multica_default_assignee,
+        execution_assignee=settings.multica_execution_assignee,
     )
 
     # One on_message dispatcher fans out to the observer and the sync handlers.
@@ -475,6 +477,8 @@ def main() -> int:
                 member_map=settings.discord_member_map,
                 thread_config=thread_cfg,
                 thread_map=thread_map,
+                default_assignee=settings.multica_default_assignee,
+                execution_assignee=settings.multica_execution_assignee,
             )
         )
         logger.info(

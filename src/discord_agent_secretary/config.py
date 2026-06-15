@@ -199,7 +199,14 @@ class Settings(BaseSettings):
         default="",
         description="Target Multica workspace UUID (required when BACKEND=multica)",
     )
-    multica_default_assignee: str = Field(default="", description="Default assignee ID/name")
+    multica_default_assignee: str = Field(
+        default="Claude",
+        description="Default lead/audit assignee for secretary-created Multica issues.",
+    )
+    multica_execution_assignee: str = Field(
+        default="GPT-5.5",
+        description="Default execution assignee for child issues created by secretary two-squad routing.",
+    )
     discord_member_map: dict[str, str] = Field(
         default_factory=dict,
         description=(

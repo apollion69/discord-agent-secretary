@@ -42,6 +42,7 @@ class GitHubBackend(IssueBackendBase):
         description: str | None = None,
         priority: str | None = None,
         assignee: str | None = None,
+        parent: str | None = None,
         on_behalf_of: str | None = None,
     ) -> IssueRef:  # pragma: no cover — unreachable, __init__ raises.
         raise NotImplementedError

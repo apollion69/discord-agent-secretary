@@ -13,6 +13,7 @@ import pytest
 from discord_agent_secretary.backends import (
     BackendCallError,
     BackendTimeoutError,
+    IssueBackend,
     IssueRef,
 )
 from discord_agent_secretary.discord_client import build_client
@@ -453,6 +454,126 @@ class TestTaskCreatedMessage:
         msg = interaction.followup.send.call_args.args[0]
         assert "http://multica.local:3000/venchur/issues/VEN-10" in msg
         assert "//" not in msg.split("http://", 1)[1]
+
+
+class TestDefaultTwoSquadRouting:
+    """Secretary-created tasks without explicit assignee become coordinated work."""
+
+    async def test_unassigned_task_creates_parent_child_and_coordination_comment(self) -> None:
+        client, tree = build_client()
+        backend = MagicMock(spec=IssueBackend)
+        backend.create_issue = AsyncMock(
+            side_effect=[
+                IssueRef(id="parent-uuid", title="Audit services", identifier="VEN-1"),
+                IssueRef(id="child-uuid", title="Execute: Audit services", identifier="VEN-2"),
+            ]
+        )
+        backend.add_comment = AsyncMock()
+        register_handlers(
+            tree,
+            backend,
+            guild_id=42,
+            app_url="http://multica.local:3000",
+            default_assignee="Claude",
+            execution_assignee="GPT-5.5",
+        )
+
+        from discord import Object
+
+        cmd = tree.get_command("task", guild=Object(id=42))
+        assert cmd is not None
+
+        interaction = _make_interaction(guild_id=42)
+        interaction.response.defer = AsyncMock()
+        await cmd.callback(
+            interaction,
+            title="Audit services",
+            description="Find cross-domain Windows services",
+        )
+
+        assert backend.create_issue.await_count == 2
+        parent_call, child_call = backend.create_issue.await_args_list
+        assert parent_call.kwargs["assignee"] == "Claude"
+        assert parent_call.kwargs["title"] == "Audit services"
+        assert child_call.kwargs["assignee"] == "GPT-5.5"
+        assert child_call.kwargs["parent"] == "parent-uuid"
+        assert "Find cross-domain Windows services" in child_call.kwargs["description"]
+        backend.add_comment.assert_awaited_once()
+        comment = backend.add_comment.await_args.args[1]
+        assert "Claude" in comment
+        assert "GPT-5.5" in comment
+        assert "VEN-2" in comment
+        assert "commands" in comment.lower()
+        msg = interaction.followup.send.await_args.args[0]
+        assert "VEN-1" in msg
+        assert "VEN-2" in msg
+
+    async def test_explicit_assignee_preserves_single_issue_flow(self) -> None:
+        client, tree = build_client()
+        backend = MagicMock(spec=IssueBackend)
+        backend.create_issue = AsyncMock(
+            return_value=IssueRef(id="parent-uuid", title="Direct", identifier="VEN-3")
+        )
+        backend.add_comment = AsyncMock()
+        register_handlers(
+            tree,
+            backend,
+            guild_id=42,
+            default_assignee="Claude",
+            execution_assignee="GPT-5.5",
+        )
+
+        from discord import Object
+
+        cmd = tree.get_command("task", guild=Object(id=42))
+        assert cmd is not None
+
+        interaction = _make_interaction(guild_id=42)
+        interaction.response.defer = AsyncMock()
+        await cmd.callback(interaction, title="Direct", assignee="Opus · xhigh")
+
+        backend.create_issue.assert_awaited_once()
+        assert backend.create_issue.await_args.kwargs["assignee"] == "Opus · xhigh"
+        assert "parent" not in backend.create_issue.await_args.kwargs
+        backend.add_comment.assert_not_called()
+
+    async def test_child_creation_failure_is_visible_not_silent(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client, tree = build_client()
+        backend = MagicMock(spec=IssueBackend)
+        backend.create_issue = AsyncMock(
+            side_effect=[
+                IssueRef(id="parent-uuid", title="Risky", identifier="VEN-4"),
+                BackendCallError("child create failed"),
+            ]
+        )
+        backend.add_comment = AsyncMock()
+        register_handlers(
+            tree,
+            backend,
+            guild_id=42,
+            default_assignee="Claude",
+            execution_assignee="GPT-5.5",
+        )
+
+        from discord import Object
+
+        cmd = tree.get_command("task", guild=Object(id=42))
+        assert cmd is not None
+
+        interaction = _make_interaction(guild_id=42)
+        interaction.response.defer = AsyncMock()
+        with caplog.at_level("WARNING"):
+            await cmd.callback(interaction, title="Risky")
+
+        assert backend.create_issue.await_count == 2
+        backend.add_comment.assert_awaited_once()
+        failure_comment = backend.add_comment.await_args.args[1]
+        assert "routing failed" in failure_comment.lower()
+        assert "child create" not in interaction.followup.send.await_args.args[0]
+        assert "⚠️" in interaction.followup.send.await_args.args[0]
+        assert any("two-squad routing failed" in r.message for r in caplog.records)
 
 
 class TestRateLimitInHandler:
