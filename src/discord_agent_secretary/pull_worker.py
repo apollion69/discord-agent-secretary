@@ -181,6 +181,22 @@ class ReviewPollWorker:
         )
         return routing_outcome in _TERMINAL_ROUTING_OUTCOMES
 
+    async def _reconcile_automated(self, issues: list[dict[str, Any]]) -> None:
+        if self._review_router is None:
+            return
+        reconcile = getattr(self._review_router, "reconcile_issue", None)
+        if reconcile is None:
+            return
+        for issue in issues:
+            if not classify_review_candidate(issue).is_automated_autopilot:
+                continue
+            result = await reconcile(issue)
+            if result.outcome not in {"not_routed", "awaiting_verdict", "already_reconciled"}:
+                logger.info(
+                    "review_poll_worker: automated verdict reconciliation",
+                    extra={"issue_id": _issue_id(issue), "outcome": result.outcome},
+                )
+
     async def run(self, client: discord.Client) -> None:
         """Run the poll loop indefinitely. Call from an asyncio task."""
         first_pass = True
@@ -193,6 +209,7 @@ class ReviewPollWorker:
         while True:
             try:
                 issues = await self._list_in_review()
+                await self._reconcile_automated(issues)
                 current_ids = {i["id"] for i in issues if "id" in i}
 
                 if first_pass:

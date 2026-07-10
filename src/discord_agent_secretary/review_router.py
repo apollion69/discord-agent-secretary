@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -19,6 +20,12 @@ logger = logging.getLogger(__name__)
 RoutingMode = Literal["off", "subscribe", "assign"]
 ROUTING_COMMENT_PREFIX = "[automated-review-routing] "
 VERDICT_COMMENT_PREFIX = "[automated-review-verdict]"
+REVIEWER_VERDICT_PREFIX = "[automated-review-verdict-v2] "
+RECONCILIATION_COMMENT_PREFIX = "[automated-review-reconciliation] "
+LEGACY_VERDICT_RE = re.compile(
+    r"review\s+verdict\s*:\s*`?(approve_to_done|request_rework_to_[a-z_]+)`?",
+    re.IGNORECASE,
+)
 
 
 def _is_uuid_ref(value: str) -> bool:
@@ -71,6 +78,53 @@ def parse_routing_record_comment(comment: dict[str, object]) -> dict[str, object
     if issue_id is None or reviewer_ref is None:
         return None
     return record
+
+
+def parse_reviewer_verdict_comment(
+    comment: dict[str, object],
+    *,
+    reviewer_ref: str,
+    rework_status: str,
+) -> tuple[str, str] | None:
+    """Parse an authoritative reviewer-authored structured or legacy verdict."""
+    if _text(comment.get("author_type")) != "agent":
+        return None
+    if _text(comment.get("author_id")) != reviewer_ref:
+        return None
+    content = _comment_content(comment).strip()
+    if content.startswith(REVIEWER_VERDICT_PREFIX):
+        try:
+            payload = json.loads(content[len(REVIEWER_VERDICT_PREFIX) :].strip())
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        action = _text(payload.get("action"))
+        summary = _text(payload.get("summary"))
+        if not summary or not summary.strip():
+            return None
+        if action in {"approve", "approve_to_done"}:
+            return "approve", summary
+        if action in {"rework", f"request_rework_to_{rework_status}"}:
+            return "rework", summary
+        return None
+    legacy = LEGACY_VERDICT_RE.search(content)
+    if legacy is None:
+        return None
+    token = legacy.group(1).lower()
+    action = "approve" if token == "approve_to_done" else "rework"
+    return action, content[:1000]
+
+
+def parse_reconciliation_comment(comment: dict[str, object]) -> dict[str, object] | None:
+    content = _comment_content(comment)
+    if not content.startswith(RECONCILIATION_COMMENT_PREFIX):
+        return None
+    try:
+        payload = json.loads(content[len(RECONCILIATION_COMMENT_PREFIX) :].strip())
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def parse_comment_list_json(data: Any) -> list[dict[str, object]]:
@@ -239,7 +293,7 @@ class AutomatedReviewRouter:
         state: dict[str, Any],
     ) -> dict[str, object] | None:
         comments = await self._backend.list_comments(issue_id)
-        for comment in comments:
+        for comment in reversed(comments):
             record = parse_routing_record_comment(comment)
             if record is None or _text(record.get("issue_id")) != issue_id:
                 continue
@@ -255,11 +309,12 @@ class AutomatedReviewRouter:
             return record
         return None
 
-    def _select_reviewer(self) -> str | None:
+    def _select_reviewer(self, *, exclude_ref: str | None = None) -> str | None:
         """Round-robin across configured reviewers (in-memory cursor)."""
-        if not self._reviewer_refs:
+        eligible = [ref for ref in self._reviewer_refs if ref != exclude_ref]
+        if not eligible:
             return None
-        ref = self._reviewer_refs[self._rr_index % len(self._reviewer_refs)]
+        ref = eligible[self._rr_index % len(eligible)]
         self._rr_index += 1
         return ref
 
@@ -275,39 +330,49 @@ class AutomatedReviewRouter:
         if self._routing_mode == "off":
             return ReviewRouteResult(issue_id=issue_id, outcome="routing_off")
 
-        reviewer_ref = self._select_reviewer()
+        producer_agent_id = None
+        if issue.get("assignee_type") == "agent" and isinstance(issue.get("assignee_id"), str):
+            producer_agent_id = str(issue["assignee_id"])
+
+        state = self.load_state()
+        issues = state["issues"]
+        existing_record = issues.get(issue_id)
+        new_cycle = (
+            isinstance(existing_record, dict)
+            and isinstance(existing_record.get("reconciled_verdict"), dict)
+            and producer_agent_id == _text(existing_record.get("producer_agent_id"))
+        )
+        if isinstance(existing_record, dict) and not new_cycle:
+            return ReviewRouteResult(
+                issue_id=issue_id,
+                outcome="already_routed",
+                reviewer_ref=_text(existing_record.get("reviewer_ref")),
+            )
+        if not new_cycle:
+            hydrated = await self._hydrate_route_from_comments(issue_id, state)
+            if hydrated is not None:
+                return ReviewRouteResult(
+                    issue_id=issue_id,
+                    outcome="already_routed",
+                    reviewer_ref=_text(hydrated.get("reviewer_ref")),
+                )
+
+        reviewer_ref = self._select_reviewer(exclude_ref=producer_agent_id)
         if reviewer_ref is None:
             logger.warning(
                 "automated review routing blocked",
                 extra={
                     "issue_id": issue_id,
                     "identifier": issue.get("identifier"),
-                    "reason": "missing_reviewer_config",
+                    "reason": "missing_eligible_reviewer",
+                    "producer_agent_id": producer_agent_id,
                 },
             )
             return ReviewRouteResult(issue_id=issue_id, outcome="blocked_missing_reviewer")
 
-        state = self.load_state()
-        issues = state["issues"]
-        if issue_id in issues:
-            return ReviewRouteResult(
-                issue_id=issue_id,
-                outcome="already_routed",
-                reviewer_ref=str(issues[issue_id].get("reviewer_ref") or reviewer_ref),
-            )
-        hydrated = await self._hydrate_route_from_comments(issue_id, state)
-        if hydrated is not None:
-            return ReviewRouteResult(
-                issue_id=issue_id,
-                outcome="already_routed",
-                reviewer_ref=_text(hydrated.get("reviewer_ref")) or reviewer_ref,
-            )
-
-        producer_agent_id = None
-        if issue.get("assignee_type") == "agent" and isinstance(issue.get("assignee_id"), str):
-            producer_agent_id = str(issue["assignee_id"])
-
         record = {
+            "protocol_version": 2,
+            "review_cycle": int(existing_record.get("review_cycle") or 1) + 1 if new_cycle else 1,
             "issue_id": issue_id,
             "identifier": issue.get("identifier"),
             "origin_type": issue.get("origin_type"),
@@ -320,6 +385,17 @@ class AutomatedReviewRouter:
                 "approve_to_done",
                 f"request_rework_to_{self._rework_status}",
             ],
+            "verdict_protocol": {
+                "prefix": REVIEWER_VERDICT_PREFIX.strip(),
+                "format": {
+                    "action": "approve|rework",
+                    "summary": "non-empty evidence-based verdict summary",
+                },
+                "instruction": (
+                    "Post exactly one reviewer-authored verdict comment using the prefix and JSON format; "
+                    "the secretary owns status and assignment changes."
+                ),
+            },
             "routed_at": datetime.now(UTC).isoformat(),
         }
         comment = ROUTING_COMMENT_PREFIX + json.dumps(
@@ -345,6 +421,76 @@ class AutomatedReviewRouter:
         issues[issue_id] = record
         self._save_state(state)
         return ReviewRouteResult(issue_id=issue_id, outcome="routed", reviewer_ref=reviewer_ref)
+
+    async def reconcile_issue(self, issue: dict[str, object]) -> ReviewRouteResult:
+        """Apply the newest valid reviewer verdict for an already-routed issue."""
+        issue_id = _text(issue.get("id")) or ""
+        if not issue_id:
+            return ReviewRouteResult(issue_id="", outcome="skipped_missing_issue_id")
+        state = self.load_state()
+        record = state["issues"].get(issue_id)
+        comments = await self._backend.list_comments(issue_id)
+        if not isinstance(record, dict):
+            for comment in comments:
+                candidate = parse_routing_record_comment(comment)
+                if candidate is not None and _text(candidate.get("issue_id")) == issue_id:
+                    record = candidate
+                    state["issues"][issue_id] = record
+                    self._save_state(state)
+                    break
+        if not isinstance(record, dict):
+            return ReviewRouteResult(issue_id=issue_id, outcome="not_routed")
+        if (
+            isinstance(record.get("reconciled_verdict"), dict)
+            and _text(issue.get("assignee_id")) == _text(record.get("producer_agent_id"))
+        ):
+            return await self.route_issue(issue)
+        reviewer_ref = _text(record.get("reviewer_ref"))
+        if not reviewer_ref:
+            return ReviewRouteResult(issue_id=issue_id, outcome="blocked_missing_reviewer")
+
+        verdict_comment: dict[str, object] | None = None
+        parsed_verdict: tuple[str, str] | None = None
+        for comment in reversed(comments):
+            parsed = parse_reviewer_verdict_comment(
+                comment,
+                reviewer_ref=reviewer_ref,
+                rework_status=self._rework_status,
+            )
+            if parsed is not None:
+                verdict_comment, parsed_verdict = comment, parsed
+                break
+        if verdict_comment is None or parsed_verdict is None:
+            return ReviewRouteResult(issue_id=issue_id, outcome="awaiting_verdict", reviewer_ref=reviewer_ref)
+        source_comment_id = _text(verdict_comment.get("id"))
+        if not source_comment_id:
+            return ReviewRouteResult(issue_id=issue_id, outcome="blocked_verdict_missing_id", reviewer_ref=reviewer_ref)
+        verdict_state = record.get("reconciled_verdict")
+        if isinstance(verdict_state, dict) and verdict_state.get("source_comment_id") == source_comment_id:
+            return ReviewRouteResult(issue_id=issue_id, outcome="already_reconciled", reviewer_ref=reviewer_ref)
+
+        action, summary = parsed_verdict
+        target_status = "done" if action == "approve" else self._rework_status
+        if self._dry_run:
+            return ReviewRouteResult(issue_id=issue_id, outcome=f"dry_run_{action}", reviewer_ref=reviewer_ref)
+        record["reconciled_verdict"] = {
+            "source_comment_id": source_comment_id,
+            "action": action,
+            "summary": summary,
+            "phase": "pending",
+            "reconciled_at": datetime.now(UTC).isoformat(),
+        }
+        state["issues"][issue_id] = record
+        self._save_state(state)
+        await self._backend.update_status(issue_id, target_status)
+        if action == "rework":
+            producer_agent_id = _text(record.get("producer_agent_id"))
+            if producer_agent_id:
+                await self._backend.assign_issue(issue_id, producer_agent_id)
+        record["reconciled_verdict"]["phase"] = "applied"
+        state["issues"][issue_id] = record
+        self._save_state(state)
+        return ReviewRouteResult(issue_id=issue_id, outcome=f"reconciled_{action}", reviewer_ref=reviewer_ref)
 
     async def _validate_verdict_owner(
         self,

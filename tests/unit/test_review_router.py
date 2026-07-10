@@ -6,7 +6,12 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from discord_agent_secretary.review_router import AutomatedReviewRouter, CliReviewBackend
+from discord_agent_secretary.review_router import (
+    REVIEWER_VERDICT_PREFIX,
+    AutomatedReviewRouter,
+    CliReviewBackend,
+    parse_reviewer_verdict_comment,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -102,6 +107,44 @@ async def test_route_issue_is_idempotent_and_preserves_producer(tmp_path) -> Non
     assert '"expected_verdicts": ["approve_to_done", "request_rework_to_todo"]' in backend.comments[0][1]
     assert backend.assignments == [("issue-1", "checker-agent")]
     assert router.load_state()["issues"]["issue-1"]["producer_agent_id"] == "producer-agent"
+
+
+@pytest.mark.asyncio
+async def test_route_excludes_producer_from_reviewer_pool(tmp_path) -> None:
+    backend = FakeReviewBackend()
+    router = AutomatedReviewRouter(
+        reviewer_refs=["producer-agent", "cross-model-reviewer"],
+        routing_mode="assign",
+        rework_status="todo",
+        dry_run=False,
+        state_path=tmp_path / "routing.json",
+        backend=backend,
+    )
+
+    result = await router.route_issue(automated_issue())
+
+    assert result.reviewer_ref == "cross-model-reviewer"
+    assert backend.assignments == [("issue-1", "cross-model-reviewer")]
+    assert '"protocol_version": 2' in backend.comments[0][1]
+    assert "automated-review-verdict-v2" in backend.comments[0][1]
+
+
+@pytest.mark.asyncio
+async def test_route_fails_closed_when_only_reviewer_is_producer(tmp_path) -> None:
+    backend = FakeReviewBackend()
+    router = AutomatedReviewRouter(
+        reviewer_refs=["producer-agent"],
+        routing_mode="assign",
+        rework_status="todo",
+        dry_run=False,
+        state_path=tmp_path / "routing.json",
+        backend=backend,
+    )
+
+    result = await router.route_issue(automated_issue())
+
+    assert result.outcome == "blocked_missing_reviewer"
+    assert backend.calls == []
 
 
 @pytest.mark.asyncio
@@ -329,6 +372,122 @@ async def test_rework_verdict_moves_to_rework_status_and_reassigns_producer(tmp_
         "issue-1",
         "[automated-review-verdict] reviewer=checker-agent action=rework: Needs the evidence link fixed",
     )
+
+
+def test_structured_verdict_requires_recorded_agent_author() -> None:
+    content = REVIEWER_VERDICT_PREFIX + '{"action":"rework","summary":"bad evidence"}'
+    assert parse_reviewer_verdict_comment(
+        {"author_type": "agent", "author_id": "checker-agent", "content": content},
+        reviewer_ref="checker-agent",
+        rework_status="todo",
+    ) == ("rework", "bad evidence")
+    assert parse_reviewer_verdict_comment(
+        {"author_type": "member", "author_id": "checker-agent", "content": content},
+        reviewer_ref="checker-agent",
+        rework_status="todo",
+    ) is None
+
+
+def test_legacy_verdict_heading_is_supported() -> None:
+    parsed = parse_reviewer_verdict_comment(
+        {
+            "author_type": "agent",
+            "author_id": "checker-agent",
+            "content": "## Review verdict: `request_rework_to_todo`\nFix primary evidence.",
+        },
+        reviewer_ref="checker-agent",
+        rework_status="todo",
+    )
+    assert parsed is not None and parsed[0] == "rework"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_rework_verdict_owns_status_and_assignment(tmp_path) -> None:
+    backend = FakeReviewBackend()
+    router = AutomatedReviewRouter(
+        reviewer_refs=["checker-agent"],
+        routing_mode="assign",
+        rework_status="todo",
+        dry_run=False,
+        state_path=tmp_path / "routing.json",
+        backend=backend,
+    )
+    await router.route_issue(automated_issue())
+    backend.listed_comments["issue-1"] = [{
+        "id": "verdict-1",
+        "author_type": "agent",
+        "author_id": "checker-agent",
+        "content": REVIEWER_VERDICT_PREFIX + '{"action":"rework","summary":"wrong run source"}',
+    }]
+
+    first = await router.reconcile_issue(automated_issue())
+    still_reviewer_assigned = {**automated_issue(), "assignee_id": "checker-agent"}
+    second = await router.reconcile_issue(still_reviewer_assigned)
+
+    assert first.outcome == "reconciled_rework"
+    assert second.outcome == "already_reconciled"
+    assert backend.statuses == [("issue-1", "todo")]
+    assert backend.assignments == [
+        ("issue-1", "checker-agent"),
+        ("issue-1", "producer-agent"),
+    ]
+    assert len(backend.comments) == 1  # routing only; reconciliation does not wake an assignee
+    assert router.load_state()["issues"]["issue-1"]["reconciled_verdict"]["phase"] == "applied"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_recovers_after_state_loss_and_existing_marker(tmp_path) -> None:
+    routing = {
+        "content": '[automated-review-routing] {"issue_id":"issue-1","reviewer_ref":"checker-agent","producer_agent_id":"producer-agent"}'
+    }
+    verdict = {
+        "id": "verdict-1",
+        "author_type": "agent",
+        "author_id": "checker-agent",
+        "content": "## Review verdict: `approve_to_done`\nLooks good.",
+    }
+    backend = FakeReviewBackend(listed_comments={"issue-1": [routing, verdict]})
+    router = AutomatedReviewRouter(
+        reviewer_refs=["checker-agent"],
+        routing_mode="assign",
+        rework_status="todo",
+        dry_run=False,
+        state_path=tmp_path / "routing.json",
+        backend=backend,
+    )
+
+    result = await router.reconcile_issue(automated_issue())
+
+    assert result.outcome == "reconciled_approve"
+    assert backend.comments == []
+    assert backend.statuses == [("issue-1", "done")]
+
+
+@pytest.mark.asyncio
+async def test_rework_cycle_is_routed_again_when_producer_returns_to_review(tmp_path) -> None:
+    backend = FakeReviewBackend()
+    router = AutomatedReviewRouter(
+        reviewer_refs=["checker-a", "checker-b"],
+        routing_mode="assign",
+        rework_status="todo",
+        dry_run=False,
+        state_path=tmp_path / "routing.json",
+        backend=backend,
+    )
+    await router.route_issue(automated_issue())
+    backend.listed_comments["issue-1"] = [{
+        "id": "verdict-1",
+        "author_type": "agent",
+        "author_id": "checker-a",
+        "content": REVIEWER_VERDICT_PREFIX + '{"action":"rework","summary":"fix it"}',
+    }]
+    await router.reconcile_issue(automated_issue())
+
+    result = await router.reconcile_issue(automated_issue())
+
+    assert result.outcome == "routed"
+    assert result.reviewer_ref == "checker-b"
+    assert router.load_state()["issues"]["issue-1"]["review_cycle"] == 2
 
 
 @pytest.mark.asyncio

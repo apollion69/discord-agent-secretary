@@ -5,6 +5,22 @@ All notable changes to `discord-agent-secretary` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.4] - 2026-07-10
+
+### Added
+
+- Protocol-v2 automated-review comments with structured reviewer verdicts.
+- Continuous reconciliation of already-routed review issues from authoritative
+  reviewer comments, including restart/state-loss recovery and repeated rework
+  cycles.
+
+### Fixed
+
+- Reviewer selection excludes the producer and fails closed when no independent
+  reviewer remains.
+- Secretary now owns verdict-driven status and producer-reassignment mutations;
+  reviewer agents only publish verdict evidence.
+
 ## [0.4.3] - 2026-06-15
 
 ### Fixed

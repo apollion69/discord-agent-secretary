@@ -16,6 +16,7 @@ class FakeReviewRouter:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.routed_issue_ids: list[str] = []
+        self.reconciled_issue_ids: list[str] = []
 
     async def route_issue(self, issue: dict[str, object]):
         issue_id = str(issue["id"])
@@ -23,6 +24,10 @@ class FakeReviewRouter:
         if self.fail:
             raise RuntimeError("route failed")
         return SimpleNamespace(outcome="routed", reviewer_ref="checker-agent")
+
+    async def reconcile_issue(self, issue: dict[str, object]):
+        self.reconciled_issue_ids.append(str(issue["id"]))
+        return SimpleNamespace(outcome="awaiting_verdict", reviewer_ref="checker-agent")
 
 
 def automated_issue(issue_id: str = "auto-1") -> dict[str, object]:
@@ -113,6 +118,7 @@ async def test_first_pass_routes_existing_automated_reviews_without_discord(
         await worker.run(client=object())  # type: ignore[arg-type]
 
     assert router.routed_issue_ids == ["auto-1"]
+    assert router.reconciled_issue_ids == ["auto-1"]
     assert json.loads((tmp_path / "seen.json").read_text(encoding="utf-8")) == {
         "seen_ids": ["auto-1"],
     }

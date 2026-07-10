@@ -202,6 +202,19 @@ MULTICA_REWORK_STATUS=todo
 MULTICA_REVIEW_STATE_PATH=/opt/discord-secretary/review-routing.json
 ```
 
+Use at least two cross-model reviewer ids in `MULTICA_AUTOMATED_REVIEWERS`.
+The router removes the current producer from the eligible pool. Reviewers post
+one protocol-v2 comment in this exact form and do not mutate issue state:
+
+```text
+[automated-review-verdict-v2] {"action":"approve|rework","summary":"evidence-based verdict"}
+```
+
+The secretary continuously reconciles routed `in_review` issues. `approve`
+moves the issue to `done`; `rework` moves it to `MULTICA_REWORK_STATUS` and
+reassigns the recorded producer. The persisted state and authoritative routing
+and verdict comments make the operation idempotent across restarts.
+
 Deploy with `MULTICA_REVIEW_DRY_RUN=true` first. Evidence commands:
 
 ```bash
